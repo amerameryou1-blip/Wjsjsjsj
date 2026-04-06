@@ -1,606 +1,1122 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# 🌐 JUPYTER BROWSER CONTROLLER - KAGGLE EDITION
-# ═══════════════════════════════════════════════════════════════════════════════
-# Features: Xvfb + Chrome browser automation with screenshot, clicks, keyboard
-# Kaggle Compatible: TPU v4, P100, CPU Only
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+# 🖥️  BROWSER CONTROLLER FOR KAGGLE - COMPLETE SOURCE
+# ════════════════════════════════════════════════════════════════════════════════
+# Xvfb + Chrome browser automation with live screenshots
+# 
+# Features:
+#   🌐 Navigate websites with virtual display
+#   📸 Live screenshots updated automatically  
+#   🖱️  Click anywhere on screenshot to click in browser
+#   📱 Touch support for mobile devices
+#   💬 Chat input to type messages
+#   ⌨️  Full keyboard support
+#   🔍 Zoom in/out
+#   📜 Scroll up/down
+#   ❤️ Heartbeat to keep Kaggle session alive
+#
+# Requirements: Internet enabled in Kaggle settings
+# ════════════════════════════════════════════════════════════════════════════════
 
 import subprocess
 import threading
 import time
 import os
-import re
-import urllib.request
+import sys
 import base64
-from io import BytesIO
+import io
+import re
+import IPython
 from IPython.display import display, HTML, clear_output
-import ipywidgets as widgets
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# KAGGLE SETUP & CHECKS
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+# CHECK IMPORTS
+# ════════════════════════════════════════════════════════════════════════════════
 
-print("🚀 Initializing Browser Controller...")
+try:
+    import xvfbwrapper
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "xvfbwrapper"], capture_output=True)
+    import xvfbwrapper
 
-# Check if we're on Kaggle
-ON_KAGGLE = os.path.exists('/kaggle/working')
+try:
+    from PIL import Image
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "Pillow"], capture_output=True)
+    from PIL import Image
 
-if ON_KAGGLE:
-    print("📍 Detected: Kaggle Environment")
-    # Create XDG runtime directory for Chrome
-    os.makedirs('/tmp/xdg-runtime', mode=0o777, exist_ok=True)
-    os.environ['XDG_RUNTIME_DIR'] = '/tmp/xdg-runtime'
-    # Create downloads directory
-    os.makedirs('/tmp/chrome-downloads', exist_ok=True)
-    DOWNLOAD_PATH = '/tmp/chrome-downloads'
-else:
-    DOWNLOAD_PATH = os.path.expanduser('~/Downloads')
-    print("📍 Detected: Local Environment")
+try:
+    import requests
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "requests"], capture_output=True)
+    import requests
 
-# Display info
-print(f"   • Download path: {DOWNLOAD_PATH}")
-print(f"   • XDG_RUNTIME_DIR: {os.environ.get('XDG_RUNTIME_DIR', 'not set')}")
+try:
+    import ipywidgets as widgets
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "ipywidgets"], capture_output=True)
+    import ipywidgets as widgets
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# XVB & CHROME PROCESS MANAGEMENT
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+# SETUP ENVIRONMENT
+# ════════════════════════════════════════════════════════════════════════════════
 
-xvfb_process = None
-chrome_process = None
-screenshot_thread = None
-heartbeat_thread = None
-running = True
+os.environ["DISPLAY"] = ":99"
+os.environ["XAUTHORITY"] = "/tmp/xauth"
+os.makedirs("/tmp/xdg-runtime", exist_ok=True)
+os.environ["XDG_RUNTIME_DIR"] = "/tmp/xdg-runtime"
+
+# Create X authority
+subprocess.run(["bash", "-c", "xauth generate :99 . trusted timeout 3600 2>/dev/null || true"], capture_output=True)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# GLOBAL STATE
+# ════════════════════════════════════════════════════════════════════════════════
+
 frame_count = 0
-screenshot_interval = 3  # seconds
+screenshot_interval = 3
+screenshot_thread = None
+stop_screenshot = threading.Event()
+heartbeat_thread = None
+stop_heartbeat = threading.Event()
+vdisplay = None
+browser_process = None
+image_widget = None
+status_widget = None
+url_widget = None
+type_widget = None
+chat_widget = None
 
-DISPLAY_NUM = ":99"
-SCREEN_SIZE = "1280x800x24"
+# Screen dimensions
+SCREEN_WIDTH = 1280
+SCREEN_HEIGHT = 800
 
-def get_display_env():
-    """Get environment with correct DISPLAY for xdotool"""
-    env = os.environ.copy()
-    env['DISPLAY'] = DISPLAY_NUM
-    env['XAUTHORITY'] = '/tmp/.xa99'  # Dummy auth for xdotool
-    return env
+# ════════════════════════════════════════════════════════════════════════════════
+# XDOTOOL HELPER FUNCTIONS
+# ════════════════════════════════════════════════════════════════════════════════
 
-def check_xvfb_running():
-    """Check if Xvfb is already running on display :99"""
-    try:
-        result = subprocess.run(
-            ['ps', 'aux'], capture_output=True, text=True
-        )
-        return f'Xvfb {DISPLAY_NUM}' in result.stdout
-    except:
-        return False
+def xdotool(args):
+    cmd = ["xvfb-run", "-a", "--server-num=99", "xdotool"] + args
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result
 
-def start_xvfb():
-    """Start Xvfb virtual display"""
-    global xvfb_process
+def xdotool_nowait(args):
+    cmd = ["xvfb-run", "-a", "--server-num=99", "xdotool"] + args
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def log_action(msg):
+    if status_widget:
+        status_widget.value = msg
+
+# ════════════════════════════════════════════════════════════════════════════════
+# INSTALL CHROME
+# ════════════════════════════════════════════════════════════════════════════════
+
+def install_chrome():
+    print("🔍 Checking for Chrome/Chromium...")
     
-    if check_xvfb_running():
-        print("✓ Xvfb already running on", DISPLAY_NUM)
-        return True
+    # Check if already installed
+    result = subprocess.run(["bash", "-c", "which google-chrome || which chromium-browser || which chromium"], capture_output=True, text=True)
+    if result.stdout.strip():
+        print("✅ Chrome/Chromium found: " + result.stdout.strip())
+        return result.stdout.strip()
     
-    print(f"🎬 Starting Xvfb on {DISPLAY_NUM}...")
+    # Try Chrome first
     try:
-        xvfb_process = subprocess.Popen(
-            ['Xvfb', DISPLAY_NUM, '-screen', '0', SCREEN_SIZE, '-ac', '+extension', 'GLX', '+render'],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        time.sleep(1)
+        print("📦 Installing Chrome...")
+        subprocess.run([
+            "bash", "-c",
+            "wget -q -O /tmp/chrome.deb https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_current_amd64.deb && "
+            "dpkg -i /tmp/chrome.deb || apt-get install -f -y"
+        ], env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"}, timeout=180, capture_output=True)
         
-        # Create dummy X authority
-        subprocess.run(['touch', '/tmp/.xa99'], check=False)
+        result = subprocess.run(["bash", "-c", "which google-chrome"], capture_output=True, text=True)
+        if result.stdout.strip():
+            print("✅ Chrome installed successfully")
+            return result.stdout.strip()
+    except Exception as e:
+        print("⚠️ Chrome install attempt failed: " + str(e))
+    
+    # Fallback to Chromium
+    try:
+        print("📦 Installing Chromium as fallback...")
+        subprocess.run([
+            "bash", "-c",
+            "apt-get update && apt-get install -y chromium chromium-browser 2>/dev/null"
+        ], env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"}, timeout=180, capture_output=True)
         
-        print(f"✓ Xvfb started (PID: {xvfb_process.pid})")
-        return True
-    except FileNotFoundError:
-        print("❌ Xvfb not found. Installing...")
-        subprocess.run(['apt-get', 'update'], check=False)
-        subprocess.run(['apt-get', 'install', '-y', 'xvfb'], check=False)
-        return start_xvfb()
+        for cmd in ["chromium", "chromium-browser", "google-chrome"]:
+            result = subprocess.run(["bash", "-c", "which " + cmd], capture_output=True, text=True)
+            if result.stdout.strip():
+                print("✅ Chromium installed: " + result.stdout.strip())
+                return result.stdout.strip()
     except Exception as e:
-        print(f"❌ Xvfb failed: {e}")
-        return False
-
-def start_chrome():
-    """Start Chrome browser"""
-    global chrome_process
+        print("⚠️ Chromium install failed: " + str(e))
     
-    print("🌐 Starting Chrome...")
-    chrome_args = [
-        'google-chrome',
-        '--no-sandbox',
-        '--disable-gpu',
-        '--disable-dev-shm-usage',
-        '--disable-setuid-sandbox',
-        '--disable-session-crashed-bubble',
-        '--disable-infobars',
-        '--no-first-run',
-        '--start-maximized',
-        f'--window-size=1280,800',
-        '--new-window',
-        '--homepage=about:blank',
-        f'--download-default-directory={DOWNLOAD_PATH}',
-        '--kiosk',
-        'https://www.google.com'
-    ]
-    
-    try:
-        chrome_process = subprocess.Popen(
-            chrome_args,
-            env=get_display_env(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        print(f"✓ Chrome started (PID: {chrome_process.pid})")
-        time.sleep(2)
-        return True
-    except FileNotFoundError:
-        print("❌ Chrome not found. Installing...")
-        if ON_KAGGLE:
-            # Install Chrome on Kaggle
-            subprocess.run(['wget', '-q', '-O', '/tmp/chrome.deb',
-                          'https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb'],
-                         check=False)
-            subprocess.run(['dpkg', '--install', '/tmp/chrome.deb'], check=False)
-            subprocess.run(['apt-get', '-f', 'install', '-y'], check=False)
-        else:
-            subprocess.run(['apt-get', 'install', '-y', 'google-chrome'], check=False)
-        return start_chrome()
-    except Exception as e:
-        print(f"❌ Chrome failed: {e}")
-        return False
-
-def xdotool_type(text):
-    """Type text using xdotool"""
-    subprocess.run(
-        ['xdotool', 'type', '--clearmodifiers', text],
-        env=get_display_env(),
-        check=False
-    )
-
-def xdotool_key(key):
-    """Press a key using xdotool"""
-    subprocess.run(
-        ['xdotool', 'key', key],
-        env=get_display_env(),
-        check=False
-    )
-
-def xdotool_click(button=1):
-    """Click mouse button (1=left, 2=middle, 3=right, 4=scroll up, 5=scroll down)"""
-    subprocess.run(
-        ['xdotool', 'click', str(button)],
-        env=get_display_env(),
-        check=False
-    )
-
-def xdotool_mousemove(x, y):
-    """Move mouse to coordinates"""
-    subprocess.run(
-        ['xdotool', 'mousemove', str(int(x)), str(int(y))],
-        env=get_display_env(),
-        check=False
-    )
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SCREENSHOT FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def take_screenshot():
-    """Take screenshot using scrot, gnome-screenshot, or ImageMagick"""
-    temp_file = '/tmp/frame.png'
-    
-    # Try different screenshot tools in order of preference
-    tools = [
-        ['scrot', temp_file, '-o'],  # scrot
-        ['gnome-screenshot', '-f', temp_file],  # gnome-screenshot
-        ['import', '-window', 'root', temp_file],  # ImageMagick
-        ['xfce4-screenshooter', '-f', '-s', temp_file],  # XFCE
-        [' flameshot', 'full', '-p', temp_file],  # Flameshot
-    ]
-    
-    for tool in tools:
-        try:
-            result = subprocess.run(
-                tool, env=get_display_env(),
-                capture_output=True, timeout=5
-            )
-            if os.path.exists(temp_file):
-                return temp_file
-        except:
-            continue
-    
-    # Fallback: Use xwd + convert
-    try:
-        subprocess.run(
-            ['xwd', '-root', '-screen', '-display', DISPLAY_NUM, '-out', '/tmp/frame.xwd'],
-            env=get_display_env(), check=False
-        )
-        subprocess.run(
-            ['convert', '/tmp/frame.xwd', temp_file],
-            check=False
-        )
-        if os.path.exists(temp_file):
-            return temp_file
-    except:
-        pass
-    
+    print("❌ No browser found, will try anyway")
     return None
 
-def update_screenshot():
-    """Update the screenshot display"""
+# ════════════════════════════════════════════════════════════════════════════════
+# INSTALL DEPENDENCIES
+# ════════════════════════════════════════════════════════════════════════════════
+
+def install_dependencies():
+    print("🔧 Installing system dependencies...")
+    
+    packages = [
+        "xvfb",
+        "xdotool", 
+        "scrot",
+        "imagemagick",
+        "wget",
+        "gnupg2",
+        "libatk1.0-0",
+        "libatk-bridge2.0-0",
+        "libatspi2.0-0",
+        "libvulkan1",
+        "libxcomposite1",
+        "libxdamage1",
+        "libxrandr2",
+        "libasound2",
+        "libpangocairo-1.0-0",
+        "libpango-1.0-0",
+        "libgtk-3-0"
+    ]
+    
+    for pkg in packages:
+        try:
+            subprocess.run(
+                ["bash", "-c", "apt-get install -y " + pkg + " 2>/dev/null"],
+                env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+                timeout=60,
+                capture_output=True
+            )
+        except:
+            pass
+    
+    print("✅ Dependencies installed")
+
+# ════════════════════════════════════════════════════════════════════════════════
+# BROWSER CONTROL FUNCTIONS
+# ════════════════════════════════════════════════════════════════════════════════
+
+def start_browser(url="https://www.google.com"):
+    global vdisplay, browser_process
+    
+    print("🎮 Starting virtual display :99...")
+    
+    # Stop any existing
+    stop_browser()
+    time.sleep(1)
+    
+    # Kill any existing Xvfb
+    subprocess.run(["bash", "-c", "pkill -9 Xvfb 2>/dev/null || true"], capture_output=True)
+    time.sleep(0.5)
+    
+    # Start Xvfb
+    try:
+        vdisplay = xvfbwrapper.Xvfb(width=SCREEN_WIDTH, height=SCREEN_HEIGHT, depth=24, display=99)
+        vdisplay.start()
+        print("✅ Xvfb started on :99")
+    except Exception as e:
+        print("⚠️ Xvfb start error: " + str(e))
+        # Try manual start
+        subprocess.run(["bash", "-c", "Xvfb :99 -screen 0 1280x800x24 &"], capture_output=True)
+        time.sleep(2)
+    
+    # Install Chrome if needed
+    chrome_path = install_chrome()
+    
+    # Create download directory
+    subprocess.run(["bash", "-c", "mkdir -p /tmp/chrome-downloads"], capture_output=True)
+    
+    print("🌐 Starting Chrome...")
+    
+    chrome_options = [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-setuid-sandbox",
+        "--window-size=1280,800",
+        "--start-maximized",
+        "--disable-infobars",
+        "--disable-extensions",
+        "--no-first-run",
+        "--disable-session-crashed-bubble",
+        "--disable-crash-reporter",
+        "--disable-oopr-debug-crash-dump",
+        "--user-data-dir=/tmp/chrome-profile",
+        "--download-default-directory=/tmp/chrome-downloads",
+        "--autoplay-policy=no-user-gesture-required"
+    ]
+    
+    if chrome_path:
+        cmd = [chrome_path] + chrome_options + [url]
+    else:
+        # Try common paths
+        for path in ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]:
+            if os.path.exists(path):
+                cmd = [path] + chrome_options + [url]
+                break
+        else:
+            cmd = ["google-chrome"] + chrome_options + [url]
+    
+    try:
+        browser_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "DISPLAY": ":99"}
+        )
+        print("✅ Chrome started (PID: " + str(browser_process.pid) + ")")
+        time.sleep(3)
+    except Exception as e:
+        print("❌ Chrome start failed: " + str(e))
+    
+    return True
+
+def stop_browser():
+    global vdisplay, browser_process
+    if browser_process:
+        try:
+            browser_process.terminate()
+            time.sleep(0.5)
+            browser_process.kill()
+        except:
+            pass
+        browser_process = None
+    if vdisplay:
+        try:
+            vdisplay.stop()
+        except:
+            pass
+        vdisplay = None
+
+def navigate_to(url):
+    log_action("🌐 Navigating to: " + url)
+    xdotool_nowait(["key", "--window=root", "ctrl+l"])
+    time.sleep(0.3)
+    xdotool(["type", "--window=root", url])
+    time.sleep(0.2)
+    xdotool(["key", "--window=root", "Return"])
+    log_action("✅ Navigated to: " + url)
+
+def go_back():
+    log_action("◀ Going back")
+    xdotool(["key", "--window=root", "Alt+Left"])
+    time.sleep(0.5)
+
+def go_forward():
+    log_action("▶ Going forward")
+    xdotool(["key", "--window=root", "Alt+Right"])
+    time.sleep(0.5)
+
+def reload_page():
+    log_action("🔄 Reloading page")
+    xdotool(["key", "--window=root", "F5"])
+    time.sleep(1)
+
+def go_home():
+    log_action("🏠 Going home")
+    xdotool(["key", "--window=root", "Alt+Home"])
+    time.sleep(1)
+
+def press_enter():
+    log_action("↵ Pressing Enter")
+    xdotool(["key", "--window=root", "Return"])
+    time.sleep(0.2)
+
+def press_escape():
+    log_action("❌ Pressing Escape")
+    xdotool(["key", "--window=root", "Escape"])
+    time.sleep(0.2)
+
+def press_tab():
+    log_action("⇥ Pressing Tab")
+    xdotool(["key", "--window=root", "Tab"])
+    time.sleep(0.2)
+
+def press_arrow_up():
+    log_action("▲ Arrow Up")
+    xdotool(["key", "--window=root", "Up"])
+    time.sleep(0.1)
+
+def press_arrow_down():
+    log_action("▼ Arrow Down")
+    xdotool(["key", "--window=root", "Down"])
+    time.sleep(0.1)
+
+def press_page_up():
+    log_action("PgUp Pressed")
+    xdotool(["key", "--window=root", "Prior"])
+    time.sleep(0.2)
+
+def press_page_down():
+    log_action("PgDn Pressed")
+    xdotool(["key", "--window=root", "Next"])
+    time.sleep(0.2)
+
+def type_text(text):
+    if text:
+        log_action("⌨️ Typing: " + text[:30] + ("..." if len(text) > 30 else ""))
+        xdotool(["type", "--window=root", text])
+        time.sleep(0.1)
+
+def copy_selection():
+    log_action("⎘ Copying (Ctrl+C)")
+    xdotool(["key", "--window=root", "ctrl+c"])
+    time.sleep(0.3)
+
+def paste_text():
+    log_action("📋 Pasting (Ctrl+V)")
+    xdotool(["key", "--window=root", "ctrl+v"])
+    time.sleep(0.3)
+
+def select_all():
+    log_action("✨ Selecting All (Ctrl+A)")
+    xdotool(["key", "--window=root", "ctrl+a"])
+    time.sleep(0.3)
+
+def right_click():
+    log_action("🖱️ Right Click")
+    xdotool(["click", "3"])
+    time.sleep(0.3)
+
+def scroll_up():
+    log_action("📜 Scrolling Up")
+    xdotool(["click", "--window=root", "4"])
+    time.sleep(0.2)
+
+def scroll_down():
+    log_action("📜 Scrolling Down")
+    xdotool(["click", "--window=root", "5"])
+    time.sleep(0.2)
+
+def zoom_in():
+    log_action("🔍 Zooming In")
+    xdotool(["key", "--window=root", "ctrl+plus"])
+    time.sleep(0.3)
+
+def zoom_out():
+    log_action("🔍 Zooming Out")
+    xdotool(["key", "--window=root", "ctrl+minus"])
+    time.sleep(0.3)
+
+def reset_zoom():
+    log_action("🔄 Resetting Zoom")
+    xdotool(["key", "--window=root", "ctrl+0"])
+    time.sleep(0.3)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SCREENSHOT FUNCTIONS
+# ════════════════════════════════════════════════════════════════════════════════
+
+def capture_screenshot():
     global frame_count
     
-    screenshot_file = take_screenshot()
-    if screenshot_file and os.path.exists(screenshot_file):
-        try:
-            with open(screenshot_file, 'rb') as f:
-                img.value = f.read()
-            frame_count += 1
-            status.value = "Frame #" + str(frame_count) + " - Screenshot updated"
-        except Exception as e:
-            status.value = "Frame #" + str(frame_count) + " - Screenshot error: " + str(e)
-    else:
-        status.value = "Frame #" + str(frame_count) + " - Failed to capture screenshot"
-
-def screenshot_worker():
-    """Background thread for periodic screenshots"""
-    while running:
-        update_screenshot()
-        time.sleep(screenshot_interval)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# KERNEL COMMUNICATION (JAVAScript Injection)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def setup_javascript_injection():
-    """Setup JavaScript handlers for click/touch events"""
-    # Get the output area for communication
-    from IPython import get_ipython
-    ipython = get_ipython()
+    # Try scrot first
+    result = subprocess.run(
+        ["bash", "-c", "DISPLAY=:99 scrot /tmp/frame.png -o 2>/dev/null"],
+        capture_output=True
+    )
     
-    if ipython is None:
-        print("⚠️  Not in IPython environment, JS injection skipped")
+    if os.path.exists("/tmp/frame.png") and os.path.getsize("/tmp/frame.png") > 0:
+        try:
+            with open("/tmp/frame.png", "rb") as f:
+                img_data = f.read()
+            frame_count = frame_count + 1
+            return img_data, True
+        except:
+            pass
+    
+    # Try gnome-screenshot fallback
+    result = subprocess.run(
+        ["bash", "-c", "DISPLAY=:99 gnome-screenshot -f /tmp/frame.png 2>/dev/null"],
+        capture_output=True
+    )
+    
+    if os.path.exists("/tmp/frame.png") and os.path.getsize("/tmp/frame.png") > 0:
+        try:
+            with open("/tmp/frame.png", "rb") as f:
+                img_data = f.read()
+            frame_count = frame_count + 1
+            return img_data, True
+        except:
+            pass
+    
+    # Try ImageMagick import fallback
+    result = subprocess.run(
+        ["bash", "-c", "DISPLAY=:99 import -window root /tmp/frame.png 2>/dev/null"],
+        capture_output=True
+    )
+    
+    if os.path.exists("/tmp/frame.png") and os.path.getsize("/tmp/frame.png") > 0:
+        try:
+            with open("/tmp/frame.png", "rb") as f:
+                img_data = f.read()
+            frame_count = frame_count + 1
+            return img_data, True
+        except:
+            pass
+    
+    # Create placeholder image
+    try:
+        from PIL import Image
+        img = Image.new("RGB", (640, 400), color=(30, 30, 30))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        frame_count = frame_count + 1
+        return buf.getvalue(), True
+    except:
+        return None, False
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SCREENSHOT THREAD
+# ════════════════════════════════════════════════════════════════════════════════
+
+def screenshot_loop():
+    global screenshot_thread, stop_screenshot, image_widget, status_widget
+    
+    while not stop_screenshot.is_set():
+        try:
+            img_data, success = capture_screenshot()
+            
+            if success and img_data and image_widget:
+                image_widget.value = img_data
+                
+                if status_widget:
+                    status_widget.value = "Frame #" + str(frame_count) + " - Screenshot updated"
+        except Exception as e:
+            if status_widget:
+                status_widget.value = "Screenshot error: " + str(e)
+        
+        stop_screenshot.wait(screenshot_interval)
+    
+    print("🛑 Screenshot thread stopped")
+
+def start_screenshot_thread(interval=3):
+    global screenshot_thread, stop_screenshot, screenshot_interval
+    
+    screenshot_interval = interval
+    
+    if screenshot_thread and screenshot_thread.is_alive():
+        stop_screenshot.set()
+        screenshot_thread.join(timeout=2)
+    
+    stop_screenshot = threading.Event()
+    screenshot_thread = threading.Thread(target=screenshot_loop, daemon=True)
+    screenshot_thread.start()
+    print("📸 Screenshot thread started (interval: " + str(interval) + "s)")
+
+def stop_screenshot_thread():
+    global stop_screenshot
+    if stop_screenshot:
+        stop_screenshot.set()
+    print("🛑 Screenshot thread stopping...")
+
+# ════════════════════════════════════════════════════════════════════════════════
+# HEARTBEAT THREAD - KEEP KAGGLE SESSION ALIVE
+# ════════════════════════════════════════════════════════════════════════════════
+
+def heartbeat_loop():
+    global stop_heartbeat
+    
+    print("❤️ Heartbeat thread started")
+    while not stop_heartbeat.is_set():
+        try:
+            # Simple network request to keep session alive
+            import urllib.request
+            try:
+                urllib.request.urlopen("https://www.google.com", timeout=5)
+            except:
+                pass
+        except:
+            pass
+        
+        stop_heartbeat.wait(25)
+    
+    print("❤️ Heartbeat thread stopped")
+
+def start_heartbeat():
+    global heartbeat_thread, stop_heartbeat
+    
+    if heartbeat_thread and heartbeat_thread.is_alive():
         return
     
-    # JavaScript code to inject
-    js_code = """
-    
-    (function() {
-        // Wait for elements to be ready
-        function init() {
-            var img = document.querySelector('.browser-screenshot');
-            if (!img) {
-                setTimeout(init, 500);
-                return;
-            }
-            
-            // Style the image
-            img.style.cursor = 'crosshair';
-            img.style.border = '3px solid #00ff88';
-            img.style.borderRadius = '8px';
-            
-            // Coordinate scaling
-            function getScaledCoords(e) {
-                var rect = img.getBoundingClientRect();
-                var clientX = e.clientX || (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
-                var clientY = e.clientY || (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
-                
-                var scaleX = 1280 / rect.width;
-                var scaleY = 800 / rect.height;
-                
-                var x = Math.round((clientX - rect.left) * scaleX);
-                var y = Math.round((clientY - rect.top) * scaleY);
-                
-                return x + ',' + y;
-            }
-            
-            // Left click
-            img.addEventListener('click', function(e) {
-                e.preventDefault();
-                var coords = getScaledCoords(e);
-                console.log('Click at:', coords);
-                
-                // Visual feedback
-                var overlay = document.createElement('div');
-                overlay.style.cssText = 'position:absolute;pointer-events:none;left:' + 
-                    (e.clientX - 10) + 'px;top:' + (e.clientY - 10) + 
-                    'px;width:20px;height:20px;border:2px solid #00ff88;' +
-                    'border-radius:50%;animation:clickRipple 0.5s forwards;';
-                document.body.appendChild(overlay);
-                setTimeout(() => overlay.remove(), 500);
-                
-                // Execute in kernel
-                if (typeof _ag_click === 'function') {
-                    _ag_click(coords);
-                } else {
-                    // Fallback: direct xdotool
-                    var coords = getScaledCoords(e);
-                    var parts = coords.split(',');
-                    IPython.notebook.kernel.execute(
-                        'import subprocess, os; ' +
-                        'subprocess.run(["xdotool", "mousemove", "' + parts[0] + '", "' + parts[1] + '"], env={"DISPLAY": ":99"}); ' +
-                        'subprocess.run(["xdotool", "click", "1"], env={"DISPLAY": ":99"});'
-                    );
-                }
-            });
-            
-            // Prevent context menu (right click)
-            img.addEventListener('contextmenu', function(e) {
-                e.preventDefault();
-                var coords = getScaledCoords(e);
-                console.log('Right click at:', coords);
-                
-                if (typeof _ag_rclick === 'function') {
-                    _ag_rclick(coords);
-                }
-            });
-            
-            // Touch support
-            var touchTimer = null;
-            img.addEventListener('touchstart', function(e) {
-                e.preventDefault();
-                touchTimer = setTimeout(function() {
-                    var coords = getScaledCoords(e);
-                    if (typeof _ag_rclick === 'function') {
-                        _ag_rclick(coords);
-                    }
-                }, 500);
-            });
-            
-            img.addEventListener('touchend', function(e) {
-                e.preventDefault();
-                if (touchTimer) {
-                    clearTimeout(touchTimer);
-                    touchTimer = null;
-                }
-                var coords = getScaledCoords(e);
-                if (typeof _ag_click === 'function') {
-                    _ag_click(coords);
-                }
-            });
-            
-            img.addEventListener('touchcancel', function() {
-                if (touchTimer) {
-                    clearTimeout(touchTimer);
-                    touchTimer = null;
-                }
-            });
-            
-            console.log('✅ Browser controller JS injected');
-        }
-        
-        // CSS animation
-        var style = document.createElement('style');
-        style.textContent = '@keyframes clickRipple { to { opacity: 0; transform: scale(2); } }';
-        document.head.appendChild(style);
-        
-        init();
-    })();
-    
-    """
-    
-    display(HTML(js_code))
+    stop_heartbeat = threading.Event()
+    heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+    heartbeat_thread.start()
 
-def _ag_click(coords):
-    """Handle click from JavaScript - move mouse and click"""
+def stop_heartbeat_thread():
+    global stop_heartbeat
+    if stop_heartbeat:
+        stop_heartbeat.set()
+    print("❤️ Heartbeat thread stopping...")
+
+# ════════════════════════════════════════════════════════════════════════════════
+# CLICK HANDLERS
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _ag_click(coords_str):
+    global frame_count, status_widget
+    
     try:
-        x, y = map(int, coords.split(','))
-        xdotool_mousemove(x, y)
-        time.sleep(0.05)
-        xdotool_click(1)
-        status.value = "Frame #" + str(frame_count) + " - Left click at (" + str(x) + ", " + str(y) + ")"
+        parts = coords_str.split(",")
+        img_x = int(float(parts[0]))
+        img_y = int(float(parts[1]))
+        
+        # Get actual image display size
+        if image_widget and hasattr(image_widget, "_layout"):
+            display_width = image_widget.layout.width
+            if display_width and "px" in str(display_width):
+                display_width = int(str(display_width).replace("px", ""))
+            else:
+                display_width = SCREEN_WIDTH
+        else:
+            display_width = SCREEN_WIDTH
+        
+        # Scale to screen coordinates
+        scale_x = SCREEN_WIDTH / display_width
+        scale_y = SCREEN_HEIGHT / SCREEN_WIDTH
+        
+        screen_x = int(img_x * scale_x)
+        screen_y = int(img_y * scale_y)
+        
+        # Clamp to screen bounds
+        screen_x = max(0, min(screen_x, SCREEN_WIDTH - 1))
+        screen_y = max(0, min(screen_y, SCREEN_HEIGHT - 1))
+        
+        log_action("🖱️ Left click at (" + str(screen_x) + ", " + str(screen_y) + ")")
+        
+        # Move mouse and click
+        xdotool_nowait(["mousemove", "--display", ":99", str(screen_x), str(screen_y)])
+        time.sleep(0.1)
+        xdotool_nowait(["click", "--display", ":99", "1"])
+        
+        frame_count = frame_count + 1
+        
     except Exception as e:
-        status.value = "Frame #" + str(frame_count) + " - Click error: " + str(e)
+        log_action("❌ Click error: " + str(e))
 
-def _ag_rclick(coords):
-    """Handle right click from JavaScript"""
+def _ag_rclick(coords_str):
+    global frame_count, status_widget
+    
     try:
-        x, y = map(int, coords.split(','))
-        xdotool_mousemove(x, y)
-        time.sleep(0.05)
-        xdotool_click(3)
-        status.value = "Frame #" + str(frame_count) + " - Right click at (" + str(x) + ", " + str(y) + ")"
+        parts = coords_str.split(",")
+        img_x = int(float(parts[0]))
+        img_y = int(float(parts[1]))
+        
+        scale_x = SCREEN_WIDTH / 640
+        scale_y = SCREEN_HEIGHT / 400
+        
+        screen_x = int(img_x * scale_x)
+        screen_y = int(img_y * scale_y)
+        
+        screen_x = max(0, min(screen_x, SCREEN_WIDTH - 1))
+        screen_y = max(0, min(screen_y, SCREEN_HEIGHT - 1))
+        
+        log_action("🖱️ Right click at (" + str(screen_x) + ", " + str(screen_y) + ")")
+        
+        xdotool_nowait(["mousemove", "--display", ":99", str(screen_x), str(screen_y)])
+        time.sleep(0.1)
+        xdotool_nowait(["click", "--display", ":99", "3"])
+        
+        frame_count = frame_count + 1
+        
     except Exception as e:
-        status.value = "Frame #" + str(frame_count) + " - Right click error: " + str(e)
+        log_action("❌ Right-click error: " + str(e))
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 # BUTTON HANDLERS
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
 def on_go_clicked(b):
-    """Navigate to URL in URL input"""
-    url = url_input.value
-    if not url.startswith(('http://', 'https://', 'file://')):
-        url = 'https://' + url
-    
-    # Ctrl+L to focus address bar, type URL, Enter
-    xdotool_key('ctrl+l')
-    time.sleep(0.3)
-    xdotool_type(url)
-    time.sleep(0.2)
-    xdotool_key('Return')
-    status.value = "Frame #" + str(frame_count) + " - Navigating to " + url
+    url = url_widget.value.strip()
+    if url:
+        if not url.startswith("http"):
+            url = "https://" + url
+        navigate_to(url)
+    else:
+        log_action("⚠️ Enter a URL first")
 
 def on_back_clicked(b):
-    """Go back in browser history"""
-    xdotool_key('Alt+Left')
-    status.value = "Frame #" + str(frame_count) + " - Back"
+    go_back()
 
 def on_forward_clicked(b):
-    """Go forward in browser history"""
-    xdotool_key('Alt+Right')
-    status.value = "Frame #" + str(frame_count) + " - Forward"
+    go_forward()
 
 def on_reload_clicked(b):
-    """Reload current page"""
-    xdotool_key('F5')
-    status.value = "Frame #" + str(frame_count) + " - Reloading..."
+    reload_page()
 
 def on_home_clicked(b):
-    """Go to home page"""
-    xdotool_key('Alt+Home')
-    status.value = "Frame #" + str(frame_count) + " - Home"
+    go_home()
 
 def on_enter_clicked(b):
-    """Press Enter key"""
-    xdotool_key('Return')
-    status.value = "Frame #" + str(frame_count) + " - Enter"
+    press_enter()
 
 def on_escape_clicked(b):
-    """Press Escape key"""
-    xdotool_key('Escape')
-    status.value = "Frame #" + str(frame_count) + " - Escape"
+    press_escape()
 
 def on_tab_clicked(b):
-    """Press Tab key"""
-    xdotool_key('Tab')
-    status.value = "Frame #" + str(frame_count) + " - Tab"
+    press_tab()
 
 def on_arrow_up_clicked(b):
-    """Press Arrow Up key"""
-    xdotool_key('Up')
-    status.value = "Frame #" + str(frame_count) + " - Up"
+    press_arrow_up()
 
 def on_arrow_down_clicked(b):
-    """Press Arrow Down key"""
-    xdotool_key('Down')
-    status.value = "Frame #" + str(frame_count) + " - Down"
+    press_arrow_down()
 
-def on_pageup_clicked(b):
-    """Press Page Up key"""
-    xdotool_key('Prior')
-    status.value = "Frame #" + str(frame_count) + " - PgUp"
+def on_page_up_clicked(b):
+    press_page_up()
 
-def on_pagedown_clicked(b):
-    """Press Page Down key"""
-    xdotool_key('Next')
-    status.value = "Frame #" + str(frame_count) + " - PgDn"
+def on_page_down_clicked(b):
+    press_page_down()
 
 def on_copy_clicked(b):
-    """Copy (Ctrl+C)"""
-    xdotool_key('ctrl+c')
-    status.value = "Frame #" + str(frame_count) + " - Copy (Ctrl+C)"
+    copy_selection()
 
 def on_paste_clicked(b):
-    """Paste (Ctrl+V)"""
-    xdotool_key('ctrl+v')
-    status.value = "Frame #" + str(frame_count) + " - Paste (Ctrl+V)"
+    paste_text()
 
-def on_selectall_clicked(b):
-    """Select All (Ctrl+A)"""
-    xdotool_key('ctrl+a')
-    status.value = "Frame #" + str(frame_count) + " - Select All (Ctrl+A)"
+def on_select_all_clicked(b):
+    select_all()
 
-def on_rightclick_clicked(b):
-    """Right click at current mouse position"""
-    xdotool_click(3)
-    status.value = "Frame #" + str(frame_count) + " - Right click"
+def on_right_click_btn(b):
+    right_click()
 
 def on_scroll_up_clicked(b):
-    """Scroll up (mouse wheel)"""
-    xdotool_click(4)
-    status.value = "Frame #" + str(frame_count) + " - Scroll Up"
+    scroll_up()
 
 def on_scroll_down_clicked(b):
-    """Scroll down (mouse wheel)"""
-    xdotool_click(5)
-    status.value = "Frame #" + str(frame_count) + " - Scroll Down"
+    scroll_down()
 
 def on_zoom_in_clicked(b):
-    """Zoom in (Ctrl++)"""
-    xdotool_key('ctrl+plus')
-    status.value = "Frame #" + str(frame_count) + " - Zoom In"
+    zoom_in()
 
 def on_zoom_out_clicked(b):
-    """Zoom out (Ctrl+-)"""
-    xdotool_key('ctrl+minus')
-    status.value = "Frame #" + str(frame_count) + " - Zoom Out"
+    zoom_out()
 
 def on_fast_screenshot(b):
-    """Fast screenshots (1 second)"""
-    global screenshot_interval
-    screenshot_interval = 1
-    status.value = "Frame #" + str(frame_count) + " - Fast mode (1s)"
+    log_action("📸 Fast screenshot: 1s")
+    start_screenshot_thread(1)
 
 def on_slow_screenshot(b):
-    """Slow screenshots (5 seconds)"""
-    global screenshot_interval
-    screenshot_interval = 5
-    status.value = "Frame #" + str(frame_count) + " - Slow mode (5s)"
+    log_action("📸 Slow screenshot: 5s")
+    start_screenshot_thread(5)
 
-def on_type_clicked(b):
-    """Type text from type input"""
-    text = type_input.value
+def on_type_submit(sender):
+    text = type_widget.value
     if text:
-        xdotool_type(text)
-        display_text = text[:30] + "..." if len(text) > 30 else text
-        status.value = "Frame #" + str(frame_count) + " - Typing: " + display_text
-        type_input.value = ""
+        type_text(text)
+        type_widget.value = ""
 
-def on_chat_send(b):
-    """Send chat message"""
-    text = chat_input.value
+def on_chat_send(sender):
+    text = chat_widget.value
     if text:
-        xdotool_type(text)
-        chat_input.value = ""
-        display_text = text[:30] + "..." if len(text) > 30 else text
-        status.value = "Frame #" + str(frame_count) + " - Sent: " + display_text
+        type_text(text)
+        press_enter()
+        chat_widget.value = ""
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 # CREATE WIDGETS
-# ═══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
-print("🎨 Creating widgets...")
+def create_widgets():
+    global image_widget, status_widget, url_widget, type_widget, chat_widget
+    
+    # Image widget for screenshots
+    image_widget = widgets.Image(
+        format="png",
+        width="100%",
+        layout=widgets.Layout(border="3px solid #00ff88", border_radius="8px")
+    )
+    
+    # Status label
+    status_widget = widgets.Label(
+        value="Initializing...",
+        layout=widgets.Layout(padding="10px", background_color="#1a1a2e", width="100%")
+    )
+    
+    # URL input
+    url_widget = widgets.Text(
+        value="https://www.google.com",
+        placeholder="Enter URL...",
+        layout=widgets.Layout(flex="1"),
+        description=""
+    )
+    
+    # Type input
+    type_widget = widgets.Text(
+        value="",
+        placeholder="Type text and press Enter...",
+        layout=widgets.Layout(flex="1"),
+        description=""
+    )
+    
+    # Chat input
+    chat_widget = widgets.Textarea(
+        value="",
+        placeholder="Chat message (Ctrl+Enter to send)...",
+        layout=widgets.Layout(width="100%", height="80px"),
+        description=""
+    )
+    
+    # Submit buttons for text inputs
+    type_submit = widgets.Button(
+        description="Send",
+        button_style="primary",
+        layout=widgets.Layout(padding="5px 15px")
+    )
+    type_submit.on_click(on_type_submit)
+    type_widget.on_submit(on_type_submit)
+    
+    chat_submit = widgets.Button(
+        description="💬 Send Chat",
+        button_style="success",
+        layout=widgets.Layout(padding="5px 15px")
+    )
+    chat_submit.on_click(on_chat_send)
+    
+    # ROW 1: Navigation buttons
+    btn_go = widgets.Button(
+        description="🌐 Go",
+        button_style="success",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_go.on_click(on_go_clicked)
+    
+    btn_back = widgets.Button(
+        description="◀ Back",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_back.on_click(on_back_clicked)
+    
+    btn_fwd = widgets.Button(
+        description="▶ Fwd",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_fwd.on_click(on_forward_clicked)
+    
+    btn_reload = widgets.Button(
+        description="🔄 Reload",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_reload.on_click(on_reload_clicked)
+    
+    btn_home = widgets.Button(
+        description="🏠 Home",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_home.on_click(on_home_clicked)
+    
+    row1 = widgets.HBox([
+        btn_go, btn_back, btn_fwd, btn_reload, btn_home
+    ], layout=widgets.Layout(margin="5px 0"))
+    
+    # ROW 2: Key buttons
+    btn_enter = widgets.Button(
+        description="↵ Enter",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_enter.on_click(on_enter_clicked)
+    
+    btn_esc = widgets.Button(
+        description="Esc",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_esc.on_click(on_escape_clicked)
+    
+    btn_tab = widgets.Button(
+        description="⇥ Tab",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_tab.on_click(on_tab_clicked)
+    
+    btn_up = widgets.Button(
+        description="▲",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_up.on_click(on_arrow_up_clicked)
+    
+    btn_down = widgets.Button(
+        description="▼",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_down.on_click(on_arrow_down_clicked)
+    
+    btn_pgup = widgets.Button(
+        description="PgUp",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_pgup.on_click(on_page_up_clicked)
+    
+    btn_pgdn = widgets.Button(
+        description="PgDn",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_pgdn.on_click(on_page_down_clicked)
+    
+    row2 = widgets.HBox([
+        btn_enter, btn_esc, btn_tab, btn_up, btn_down, btn_pgup, btn_pgdn
+    ], layout=widgets.Layout(margin="5px 0"))
+    
+    # ROW 3: Tools buttons
+    btn_copy = widgets.Button(
+        description="⎘ Copy",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_copy.on_click(on_copy_clicked)
+    
+    btn_paste = widgets.Button(
+        description="⌘ Paste",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_paste.on_click(on_paste_clicked)
+    
+    btn_selall = widgets.Button(
+        description="Sel All",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_selall.on_click(on_select_all_clicked)
+    
+    btn_rclick = widgets.Button(
+        description="🖱️ RClick",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_rclick.on_click(on_right_click_btn)
+    
+    btn_scrlup = widgets.Button(
+        description="▲ Scroll",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_scrlup.on_click(on_scroll_up_clicked)
+    
+    btn_scrldn = widgets.Button(
+        description="▼ Scroll",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_scrldn.on_click(on_scroll_down_clicked)
+    
+    btn_zoomin = widgets.Button(
+        description="🔍+",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_zoomin.on_click(on_zoom_in_clicked)
+    
+    btn_zoomout = widgets.Button(
+        description="🔍-",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_zoomout.on_click(on_zoom_out_clicked)
+    
+    row3 = widgets.HBox([
+        btn_copy, btn_paste, btn_selall, btn_rclick, btn_scrlup, btn_scrldn, btn_zoomin, btn_zoomout
+    ], layout=widgets.Layout(margin="5px 0"))
+    
+    # ROW 4: Screenshot speed
+    btn_fast = widgets.Button(
+        description="📸 Fast 1s",
+        button_style="warning",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_fast.on_click(on_fast_screenshot)
+    
+    btn_slow = widgets.Button(
+        description="📸 Slow 5s",
+        button_style="info",
+        layout=widgets.Layout(padding="8px 12px")
+    )
+    btn_slow.on_click(on_slow_screenshot)
+    
+    row4 = widgets.HBox([
+        btn_fast, btn_slow
+    ], layout=widgets.Layout(margin="5px 0"))
+    
+    # URL bar
+    url_bar = widgets.HBox([
+        widgets.HTML("URL:"),
+        url_widget,
+        type_submit
+    ], layout=widgets.Layout(margin="5px 0"))
+    
+    # Type bar
+    type_bar = widgets.HBox([
+        widgets.HTML("Type:"),
+        type_widget
+    ], layout=widgets.Layout(margin="5px 0"))
+    
+    # Chat bar
+    chat_bar = widgets.VBox([
+        widgets.HTML("💬 Chat:"),
+        chat_widget,
+        chat_submit
+    ], layout=widgets.Layout(margin="5px 0"))
+    
+    return widgets.VBox([
+        status_widget,
+        image_widget,
+        url_bar,
+        type_bar,
+        row1,
+        row2,
+        row3,
+        row4,
+        chat_bar
+    ])
 
-# Screenshot image
-img = widgets.Image(
-    format='png',
-    width='100%',
-    layout=widgets.Layout(border='3px solid #00ff88', border_radius='8px')
-)
+# ════════════════════════════════════════════════════════════════════════════════
+# JAVASCRIPT INJECTION FOR IMAGE INTERACTIVITY
+# ════════════════════════════════════════════════════════════════════════════════
 
-# Status label
-status = widgets.Label(
-    value='Initializing...',
-    layout=widgets.Layout(padding='10px', background_color='#1a1a2e')
-)
+def get_javascript():
+    js = """
+    
+    function setupImageInteraction() {
+        var img = document.querySelector('img[data-checked="checked"]');
+        if (!img) {
+            setTimeout(setupImageInteraction, 500);
+            return;
+        }
+        
+        img.style.cursor = 'crosshair';
+        img.style.border = '3px solid #00ff88';
+        img.style.boxShadow = '0 0 20px rgba(0, 255, 136, 0.3)';
+        
+        // Desktop click
+        img.onclick = function(e) {
+            var rect = img.getBoundingClientRect();
+            var x = Math.round((e.clientX - rect.left) * (img.naturalWidth / rect.width));
+            var y = Math.round((e.clientY - rect.top) * (img.naturalHeight / rect.height));
+            var kernel = IPython.notebook.kernel;
+            kernel.execute('_ag_click("' + x + ',' + y + '")');
+            showClickFeedback(e.clientX, e.clientY);
+        };
+        
+        // Right click
+        img.oncontextmenu = function(e) {
+            e.preventDefault();
+            var rect = img.getBoundingClientRect();
+            var x = Math.round((e.clientX - rect.left) * (img.naturalWidth / rect.width));
+            var y = Math.round((e.clientY - rect.top) * (img.naturalHeight / rect.height));
+            var kernel = IPython.notebook.kernel;
+            kernel.execute('_ag_rclick("' + x + ',' + y + '")');
+        };
+        
+        // Touch support
+        img.addEventListener('touchstart', function(e) {
+            img._touchTimer = setTimeout(function() {
+                var touch = e.touches[0];
+                var rect = img.getBoundingClientRect();
+                var x = Math.round((touch.clientX - rect.left) * (img.naturalWidth / rect.width));
+                var y = Math.round((touch.clientY - rect.top) * (img.naturalHeight / rect.height));
+                var kernel = IPython.notebook.kernel;
+                kernel.execute('_ag_rclick("' + x + ',' + y + '")');
+            }, 500);
+        });
+        
+        img.addEventListener('touchend', function(e) {
+            if (img._touchTimer) {
+                clearTimeout(img._touchTimer);
+                var touch = e.changedTouches[0];
+                var rect = img.getBoundingClientRect();
+                var x = Math.round((touch.clientX - rect.left) * (img.naturalWidth / rect.width));
+                var y = Math.round((touch.clientY - rect.top) * (img.naturalHeight / rect.height));
+                var kernel = IPython.notebook.kernel;
+                kernel.execute('_ag_click("' + x + ',' + y + '")');
+                showClickFeedback(touch.clientX, touch.clientY);
+            }
+        });
+        
+        img.addEventListener('touchmove', function(e) {
+            if (img._touchTimer) {
+                clearTimeout(img._touchTimer);
+            }
+        });
+        
+        console.log('✅ Image interaction enabled');
+    }
+    
+    function showClickFeedback(x, y) {
+        var dot = document.createElement('div');
+        dot.style.cssText = 'position:fixed;left:' + (x-8) + 'px;top:' + (y-8) + 'px;width:16px;height:16px;background:#00ff88;border-radius:50%;pointer-events:none;z-index:9999;animation:clickPulse 0.5s ease-out forwards;';
+        document.body.appendChild(dot);
+        setTimeout(function() { dot.remove(); }, 500);
+    }
+    
+    function addClickAnimation() {
+        var style = document.createElement('style');
+        style.textContent = '@keyframes clickPulse { 0% { transform: scale(1); opacity: 1; } 100% { transform: scale(2); opacity: 0; } }';
+        document.head.appendChild(style);
+    }
+    
+    document.addEventListener('DOMContentLoaded', function() {
+        addClickAnimation();
+        setupImageInteraction();
+    });
+    
+    """
+    return js
 
-# URL input
-url_input = widgets.Text(
-    value='https://www.google.com',
-    placeholder='Enter URL...',
-    layout=widgets.Layout(flex='1'),
-    description=''
-)
+# ════════════════════════════════════════════════════════════════════════════════
+# MAIN LAUNCH FUNCTION
+# ════════════════════════════════════════════════════════════════════════════════
 
-# Type input
-type_input = widgets.Text(
-    value='',
-    placeholder='Type text here...',
-    layout=widgets.Layout(flex='1'),
-    description=''
-)
+def launch_browser_controller(start_url="https://www.google.com"):
+    global image_widget, status_widget
+    
+    print("=" * 60)
+    print("🖥️  BROWSER CONTROLLER FOR KAGGLE")
+    print("=" * 60)
+    
+    # Install deps
+    install_dependencies()
+    
+    # Start browser
+    print("🚀 Launching browser controller...")
+    start_browser(start_url)
+    
+    # Create widgets
+    print("🎨 Creating widgets...")
+    ui = create_widgets()
+    
+    # Display
+    print("📺 Displaying UI...")
+    display(ui)
+    
+    # Inject JavaScript
+    display(HTML(get_javascript()))
+    
+    # Start threads
+    print("📡 Starting threads...")
+    start_screenshot_thread(3)
+    start_heartbeat()
+    
+    # Initial screenshot
+    time.sleep(2)
+    img_data, success = capture_screenshot()
+    if success and img_data and image_widget:
+        image_widget.value = img_data
+    
+    log_action("✅ Browser controller ready! Frame #" + str(frame_count))
+    print("=" * 60)
+    print("✅ READY! Click on the image to click in the browser.")
+    print("=" * 60)
+    
+    return ui
 
-# Chat input
-chat_input = widgets.Textarea(
-    value='',
-    placeholder='💬 Chat message (Ctrl+Enter to send)...',
-    layout=widgets.Layout(width='100%', height='60px'),
-    description=''
-)
+# ════════════════════════════════════════════════════════════════════════════════
+# CLEANUP FUNCTION
+# ════════════════════════════════════════════════════════════════════════════════
 
-# Navigation buttons (Row 1)
-btn_go = widgets.Button(description=' 🌐 Go', button_style='success')
-btn_back = widgets.Button(description=' ◀ Back')
-btn_forward = widgets.Button(description=' ▶ Fwd')
-btn_reload = widgets.Button(description=' 🔄 Reload')
-btn_home = widgets.Button(description=' 🏠 Home')
+def cleanup():
+    print("🧹 Cleaning up...")
+    stop_screenshot_thread()
+    stop_heartbeat_thread()
+    stop_browser()
+    print("✅ Cleanup complete")
 
-# Keyboard buttons (Row 2)
-btn_enter = widgets.Button(description=' ↵ Enter', button_style='info')
-btn_escape = widgets.Button(description=' Esc')
-btn_t
+# ════════════════════════════════════════════════════════════════════════════════
+# AUTO-LAUNCH
+# ════════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    launch_browser_controller("https://www.google.com")
