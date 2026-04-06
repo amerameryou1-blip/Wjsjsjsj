@@ -9,7 +9,7 @@ def pip_install(packages):
     subprocess.run([sys.executable, '-m', 'pip', 'install', '-q'] + packages, check=False)
 
 
-pip_install(['requests', 'ipywidgets', 'Pillow', 'xvfbwrapper'])
+pip_install(['requests', 'ipywidgets', 'Pillow', 'xvfbwrapper', 'ipyevents'])
 
 import requests
 
