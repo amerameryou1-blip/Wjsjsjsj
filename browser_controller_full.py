@@ -89,11 +89,23 @@ def display_env(extra_env=None):
 
 
 def run_list(args, env=None, capture_output=True, check=False):
-    return subprocess.run(args, env=display_env(env), text=True, capture_output=capture_output, check=check)
+    return subprocess.run(
+        args,
+        env=display_env(env),
+        text=True,
+        capture_output=capture_output,
+        check=check,
+    )
 
 
 def run_shell(command, env=None):
-    return subprocess.run(command, shell=True, env=display_env(env), text=True, capture_output=True)
+    return subprocess.run(
+        command,
+        shell=True,
+        env=display_env(env),
+        text=True,
+        capture_output=True,
+    )
 
 
 def which_any(candidates):
@@ -148,7 +160,11 @@ def detect_cpu_info():
 
 
 def profile_has_previous_session(profile_dir):
-    candidates = [os.path.join(profile_dir, 'Default'), os.path.join(profile_dir, 'Local State'), os.path.join(profile_dir, 'First Run')]
+    candidates = [
+        os.path.join(profile_dir, 'Default'),
+        os.path.join(profile_dir, 'Local State'),
+        os.path.join(profile_dir, 'First Run'),
+    ]
     for candidate in candidates:
         if os.path.exists(candidate):
             return True
@@ -157,7 +173,23 @@ def profile_has_previous_session(profile_dir):
 
 def prune_profile(profile_dir):
     removed = []
-    trash_names = ['Cache', 'Code Cache', 'GPUCache', 'DawnCache', 'DawnGraphiteCache', 'GrShaderCache', 'GraphiteDawnCache', 'ShaderCache', 'Media Cache', 'Service Worker/CacheStorage', 'Default/Cache', 'Default/Code Cache', 'Default/GPUCache', 'Default/Media Cache', 'Default/Service Worker/CacheStorage']
+    trash_names = [
+        'Cache',
+        'Code Cache',
+        'GPUCache',
+        'DawnCache',
+        'DawnGraphiteCache',
+        'GrShaderCache',
+        'GraphiteDawnCache',
+        'ShaderCache',
+        'Media Cache',
+        'Service Worker/CacheStorage',
+        'Default/Cache',
+        'Default/Code Cache',
+        'Default/GPUCache',
+        'Default/Media Cache',
+        'Default/Service Worker/CacheStorage',
+    ]
     for name in trash_names:
         path_value = os.path.join(profile_dir, name)
         if os.path.isdir(path_value):
@@ -180,6 +212,7 @@ def list_download_files_html(downloads_dir, limit_count=60):
     items = []
     if not os.path.isdir(downloads_dir):
         return html_message_box('Downloads', ['No downloads directory yet.'], '#38bdf8')
+
     paths = []
     for name in os.listdir(downloads_dir):
         full_path = os.path.join(downloads_dir, name)
@@ -188,9 +221,11 @@ def list_download_files_html(downloads_dir, limit_count=60):
             paths.append((stat_info.st_mtime, name, stat_info.st_size))
         except Exception:
             continue
+
     paths.sort(reverse=True)
     if not paths:
         return html_message_box('Downloads', ['No files downloaded yet.', downloads_dir], '#38bdf8')
+
     items.append('<div style="padding:12px;border:1px solid #334155;border-radius:14px;background:#020617;color:#e2e8f0;">')
     items.append('<div style="font-weight:700;color:#38bdf8;margin-bottom:8px;">Saved downloads</div>')
     items.append('<div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">' + html.escape(downloads_dir) + '</div>')
@@ -207,7 +242,50 @@ def list_download_files_html(downloads_dir, limit_count=60):
 
 
 def github_headers(token_value):
-    return {'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + token_value.strip(), 'X-GitHub-Api-Version': '2022-11-28'}
+    return {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': 'Bearer ' + token_value.strip(),
+        'X-GitHub-Api-Version': '2022-11-28',
+    }
+
+
+def github_get_user(requests_module, token_value):
+    return requests_module.get('https://api.github.com/user', headers=github_headers(token_value), timeout=60)
+
+
+def github_get_repo(requests_module, token_value, owner_value, repo_value):
+    url_value = 'https://api.github.com/repos/' + owner_value + '/' + repo_value
+    return requests_module.get(url_value, headers=github_headers(token_value), timeout=60)
+
+
+def github_validate_token(requests_module, token_value):
+    response = github_get_user(requests_module, token_value)
+    if response.status_code != 200:
+        raise RuntimeError('GitHub token invalid or missing required scopes')
+    data = response.json()
+    login_value = str(data.get('login') or '')
+    name_value = str(data.get('name') or '')
+    return {
+        'login': login_value,
+        'name': name_value,
+        'id': str(data.get('id') or ''),
+    }
+
+
+def github_check_repo_access(requests_module, token_value, owner_value, repo_value):
+    response = github_get_repo(requests_module, token_value, owner_value, repo_value)
+    if response.status_code != 200:
+        raise RuntimeError('Cannot access repository ' + owner_value + '/' + repo_value)
+    data = response.json()
+    permissions = data.get('permissions') or {}
+    can_push = bool(permissions.get('push') or permissions.get('admin') or permissions.get('maintain'))
+    return {
+        'full_name': str(data.get('full_name') or (owner_value + '/' + repo_value)),
+        'default_branch': str(data.get('default_branch') or ''),
+        'private': bool(data.get('private')),
+        'can_push': can_push,
+        'permissions': permissions,
+    }
 
 
 def github_upsert_file(requests_module, token_value, owner_value, repo_value, branch_value, path_value, content_text, commit_message):
@@ -219,7 +297,11 @@ def github_upsert_file(requests_module, token_value, owner_value, repo_value, br
         sha_value = get_response.json().get('sha')
     elif get_response.status_code != 404:
         get_response.raise_for_status()
-    payload = {'message': commit_message, 'content': base64.b64encode(content_text.encode('utf-8')).decode('ascii'), 'branch': branch_value}
+    payload = {
+        'message': commit_message,
+        'content': base64.b64encode(content_text.encode('utf-8')).decode('ascii'),
+        'branch': branch_value,
+    }
     if sha_value:
         payload['sha'] = sha_value
     put_response = requests_module.put(api_url, headers=headers, json=payload, timeout=60)
@@ -230,7 +312,18 @@ def github_upsert_file(requests_module, token_value, owner_value, repo_value, br
 def github_upsert_many(requests_module, token_value, owner_value, repo_value, branch_value, files_map, commit_prefix):
     results = []
     for path_value, content_text in files_map.items():
-        results.append(github_upsert_file(requests_module, token_value, owner_value, repo_value, branch_value, path_value, content_text, commit_prefix + ' · ' + path_value))
+        results.append(
+            github_upsert_file(
+                requests_module,
+                token_value,
+                owner_value,
+                repo_value,
+                branch_value,
+                path_value,
+                content_text,
+                commit_prefix + ' · ' + path_value,
+            )
+        )
     return results
 
 
@@ -238,7 +331,20 @@ def build_readme_text(owner_value, repo_value, branch_value, prefix_value):
     prefix_clean = prefix_value.strip('/')
     if prefix_clean:
         prefix_clean = prefix_clean + '/'
-    lines = ['# Browser Controller Bundle', '', 'This repo stores the production Kaggle browser controller bundle.', '', 'Recommended launcher target files:', '', '- ' + prefix_clean + 'browser_controller_main.py', '- ' + prefix_clean + 'browser_controller_support.py', '', 'Repo: https://github.com/' + owner_value + '/' + repo_value + '/tree/' + branch_value, '', 'The launcher should fetch the raw Python files directly instead of parsing README code blocks.']
+    lines = [
+        '# Browser Controller Bundle',
+        '',
+        'This repo stores the production Kaggle browser controller bundle.',
+        '',
+        'Recommended launcher target files:',
+        '',
+        '- ' + prefix_clean + 'browser_controller_main.py',
+        '- ' + prefix_clean + 'browser_controller_support.py',
+        '',
+        'Repo: https://github.com/' + owner_value + '/' + repo_value + '/tree/' + branch_value,
+        '',
+        'The launcher should fetch the raw Python files directly instead of parsing README code blocks.',
+    ]
     return '\n'.join(lines).rstrip() + '\n'
 
 
