@@ -16,6 +16,11 @@ import ipywidgets as widgets
 from IPython.display import display, HTML
 from xvfbwrapper import Xvfb
 
+try:
+    from ipyevents import Event
+except Exception:
+    Event = None
+
 DISPLAY_VALUE = SUPPORT['DISPLAY_VALUE']
 SCREEN_W = SUPPORT['SCREEN_W']
 SCREEN_H = SUPPORT['SCREEN_H']
@@ -66,6 +71,7 @@ BROWSER_PROCESS = None
 SCREENSHOT_THREAD = None
 HEARTBEAT_THREAD = None
 BROWSER_BIN = None
+IMAGE_EVENT = None
 
 img = None
 status = None
@@ -540,6 +546,71 @@ def _ag_rclick(coords):
         set_status('Right click error: ' + str(exc)[:120])
 
 
+def coords_from_dom_event(event_value):
+    data_x = event_value.get('dataX')
+    data_y = event_value.get('dataY')
+    rel_x = event_value.get('relativeX')
+    rel_y = event_value.get('relativeY')
+    width_val = event_value.get('boundingRectWidth') or event_value.get('boundingRect', {}).get('width') or event_value.get('target', {}).get('width') or 0
+    height_val = event_value.get('boundingRectHeight') or event_value.get('boundingRect', {}).get('height') or event_value.get('target', {}).get('height') or 0
+
+    if data_x is not None and data_y is not None:
+        x_val = int(float(data_x))
+        y_val = int(float(data_y))
+        return max(0, min(SCREEN_W, x_val)), max(0, min(SCREEN_H, y_val))
+
+    if rel_x is not None and rel_y is not None and width_val and height_val:
+        x_scaled = int(round((float(rel_x) / float(width_val)) * SCREEN_W))
+        y_scaled = int(round((float(rel_y) / float(height_val)) * SCREEN_H))
+        return max(0, min(SCREEN_W, x_scaled)), max(0, min(SCREEN_H, y_scaled))
+
+    if rel_x is not None and rel_y is not None:
+        x_val = int(float(rel_x))
+        y_val = int(float(rel_y))
+        return max(0, min(SCREEN_W, x_val)), max(0, min(SCREEN_H, y_val))
+
+    raise RuntimeError('No usable coordinates in event')
+
+
+def handle_image_dom_event(event_value):
+    try:
+        event_type = str(event_value.get('type') or '')
+        x_val, y_val = coords_from_dom_event(event_value)
+        xmove(x_val, y_val)
+        time.sleep(0.03)
+        if event_type == 'contextmenu':
+            xclick(3)
+            set_status('Right click at ' + str(x_val) + ',' + str(y_val))
+        else:
+            xclick(1)
+            set_status('Left click at ' + str(x_val) + ',' + str(y_val))
+    except Exception as exc:
+        set_status('Image event error: ' + str(exc)[:120])
+
+
+def bind_image_events():
+    global IMAGE_EVENT
+    if img is None:
+        return False
+    if Event is None:
+        return False
+    try:
+        IMAGE_EVENT = Event(
+            source=img,
+            watched_events=['click', 'contextmenu']
+        )
+        IMAGE_EVENT.prevent_default_action = True
+        IMAGE_EVENT.wait = 0
+        IMAGE_EVENT.throttle_or_debounce = 'throttle'
+        IMAGE_EVENT.on_dom_event(handle_image_dom_event)
+        set_status('Image click bridge ready')
+        return True
+    except Exception as exc:
+        IMAGE_EVENT = None
+        set_status('Image bridge fallback: ' + str(exc)[:120])
+        return False
+
+
 def shutdown_runtime(_=None):
     STOP_EVENT.set()
     save_runtime_state()
@@ -591,18 +662,24 @@ def build_image_bridge_script():
 <script>
 (function() {
   function kernelExecute(name, payload) {
-    if (window.google && window.google.colab && window.google.colab.kernel) {
-      window.google.colab.kernel.invokeFunction(name, [payload], {});
-      return true;
-    }
-    if (window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel) {
-      window.Jupyter.notebook.kernel.execute(name + '(\"' + payload + '\")');
-      return true;
-    }
-    if (window.IPython && window.IPython.notebook && window.IPython.notebook.kernel) {
-      window.IPython.notebook.kernel.execute(name + '(\"' + payload + '\")');
-      return true;
-    }
+    try {
+      if (window.google && window.google.colab && window.google.colab.kernel && window.google.colab.kernel.invokeFunction) {
+        window.google.colab.kernel.invokeFunction(name, [payload], {});
+        return true;
+      }
+    } catch (e) {}
+    try {
+      if (window.Jupyter && window.Jupyter.notebook && window.Jupyter.notebook.kernel) {
+        window.Jupyter.notebook.kernel.execute(name + '(\"' + payload + '\")');
+        return true;
+      }
+    } catch (e) {}
+    try {
+      if (window.IPython && window.IPython.notebook && window.IPython.notebook.kernel) {
+        window.IPython.notebook.kernel.execute(name + '(\"' + payload + '\")');
+        return true;
+      }
+    } catch (e) {}
     return false;
   }
 
@@ -612,25 +689,36 @@ def build_image_bridge_script():
 
   function findImage() {
     var images = Array.from(document.querySelectorAll('img'));
+    images = images.filter(function(node) {
+      var rect = node.getBoundingClientRect();
+      return rect.width > 120 && rect.height > 80;
+    });
     if (!images.length) return null;
     var best = images[0];
     var bestArea = 0;
-    images.forEach(function(img) {
-      var rect = img.getBoundingClientRect();
+    images.forEach(function(node) {
+      var rect = node.getBoundingClientRect();
       var area = rect.width * rect.height;
       if (area > bestArea) {
         bestArea = area;
-        best = img;
+        best = node;
       }
     });
     return best;
   }
 
-  function coordsFromEvent(image, ev) {
+  function coordsFromPoint(image, clientX, clientY) {
     var rect = image.getBoundingClientRect();
-    var x = Math.round(((ev.clientX - rect.left) / rect.width) * 1280);
-    var y = Math.round(((ev.clientY - rect.top) / rect.height) * 800);
+    if (!rect.width || !rect.height) return '0,0';
+    var x = Math.round(((clientX - rect.left) / rect.width) * 1280);
+    var y = Math.round(((clientY - rect.top) / rect.height) * 800);
     return clamp(x, 0, 1280) + ',' + clamp(y, 0, 800);
+  }
+
+  function flash(image) {
+    var old = image.style.boxShadow;
+    image.style.boxShadow = '0 0 0 3px rgba(34,197,94,0.65), 0 0 28px rgba(34,197,94,0.45)';
+    setTimeout(function() { image.style.boxShadow = old || '0 0 0 2px rgba(34,197,94,0.45)'; }, 180);
   }
 
   function attach() {
@@ -645,29 +733,70 @@ def build_image_bridge_script():
     image.dataset.bcAttached = '1';
     image.style.cursor = 'crosshair';
     image.style.border = '2px solid #22c55e';
-    image.style.touchAction = 'manipulation';
+    image.style.boxShadow = '0 0 0 2px rgba(34,197,94,0.45)';
+    image.style.touchAction = 'none';
+    image.style.webkitUserSelect = 'none';
+    image.style.userSelect = 'none';
+
+    var touchTimer = null;
+    var touchMoved = false;
 
     image.addEventListener('click', function(ev) {
-      var payload = coordsFromEvent(image, ev);
+      ev.preventDefault();
+      ev.stopPropagation();
+      var payload = coordsFromPoint(image, ev.clientX, ev.clientY);
+      flash(image);
       kernelExecute('_ag_click', payload);
-    });
+      return false;
+    }, true);
 
     image.addEventListener('contextmenu', function(ev) {
       ev.preventDefault();
-      var payload = coordsFromEvent(image, ev);
+      ev.stopPropagation();
+      var payload = coordsFromPoint(image, ev.clientX, ev.clientY);
+      flash(image);
       kernelExecute('_ag_rclick', payload);
       return false;
-    });
+    }, true);
+
+    image.addEventListener('touchstart', function(ev) {
+      if (!ev.changedTouches || !ev.changedTouches.length) return;
+      touchMoved = false;
+      var touch = ev.changedTouches[0];
+      var payload = coordsFromPoint(image, touch.clientX, touch.clientY);
+      if (touchTimer) clearTimeout(touchTimer);
+      touchTimer = setTimeout(function() {
+        flash(image);
+        kernelExecute('_ag_rclick', payload);
+        touchTimer = null;
+      }, 520);
+    }, { passive: true });
+
+    image.addEventListener('touchmove', function() {
+      touchMoved = true;
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+      }
+    }, { passive: true });
 
     image.addEventListener('touchend', function(ev) {
       if (!ev.changedTouches || !ev.changedTouches.length) return;
       var touch = ev.changedTouches[0];
-      var payload = coordsFromEvent(image, touch);
-      kernelExecute('_ag_click', payload);
+      var payload = coordsFromPoint(image, touch.clientX, touch.clientY);
+      if (touchTimer) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+        if (!touchMoved) {
+          flash(image);
+          kernelExecute('_ag_click', payload);
+        }
+      }
     }, { passive: true });
   }
 
   attach();
+  setInterval(attach, 1500);
 })();
 </script>
 """
@@ -708,7 +837,7 @@ def build_ui():
     global img, status, heartbeat, url, type_txt, info_html, downloads_html, state_html, github_status_html
     global github_token, github_owner, github_repo, github_branch, github_prefix, github_mode, github_commit_message
 
-    img = widgets.Image(format='png', width='100%')
+    img = widgets.Image(format='png', width='100%', layout=widgets.Layout(width='100%', max_width='1280px', object_fit='contain'))
     status = widgets.Label(value='Frame #0 - last action')
     heartbeat = widgets.Label(value='Heartbeat: starting')
     url = widgets.Text(value=URL_GOOGLE, placeholder='Enter URL')
@@ -829,9 +958,14 @@ def build_ui():
         github_status_html,
     ])
     display(layout)
+    bridge_ok = bind_image_events()
     display(HTML(build_image_bridge_script()))
     restore_state_into_widgets()
     refresh_state_panel()
+    if bridge_ok:
+        set_status('Ready - widget click bridge active')
+    else:
+        set_status('Ready - JS click bridge fallback active')
 
 
 def start_threads():
