@@ -7,13 +7,13 @@ import time
 import html
 import json
 import shutil
-import base64
 import threading
 import subprocess
+from io import BytesIO
 
 import requests
 import ipywidgets as widgets
-from PIL import Image
+from PIL import Image, ImageDraw
 from IPython.display import display, HTML
 from xvfbwrapper import Xvfb
 
@@ -65,12 +65,12 @@ FRAME_PATH = os.path.join(STATE['root'], 'frame.png')
 LOG_PATH = os.path.join(STATE['logs_dir'], 'runtime.log')
 FRAME_COUNT = 0
 LAST_ACTION = 'Ready'
-SHOT_INTERVAL = 3
-SHOT_WIDTH = 960
-SHOT_JPEG_QUALITY = 45
+SHOT_INTERVAL = 2
+SHOT_WIDTH = 1120
+SHOT_JPEG_QUALITY = 72
 CURSOR_X = SCREEN_W // 2
 CURSOR_Y = SCREEN_H // 2
-CURSOR_STEP = 60
+CURSOR_STEP = 40
 STOP_EVENT = threading.Event()
 XVFB_HANDLE = None
 BROWSER_PROCESS = None
@@ -107,11 +107,15 @@ def log_line(text_value):
         pass
 
 
+def status_text():
+    return 'Frame #' + str(FRAME_COUNT) + ' - ' + LAST_ACTION + ' · Cursor ' + str(CURSOR_X) + ',' + str(CURSOR_Y)
+
+
 def set_status(text_value):
     global LAST_ACTION
     LAST_ACTION = text_value
     if status is not None:
-        status.value = 'Frame #' + str(FRAME_COUNT) + ' - ' + text_value + ' · Cursor ' + str(CURSOR_X) + ',' + str(CURSOR_Y)
+        status.value = status_text()
     log_line(text_value)
 
 
@@ -135,8 +139,8 @@ def xtype(text_value):
 
 def xmove(x_value, y_value):
     global CURSOR_X, CURSOR_Y
-    CURSOR_X = max(0, min(SCREEN_W, int(x_value)))
-    CURSOR_Y = max(0, min(SCREEN_H, int(y_value)))
+    CURSOR_X = max(0, min(SCREEN_W - 1, int(x_value)))
+    CURSOR_Y = max(0, min(SCREEN_H - 1, int(y_value)))
     xdotool('mousemove ' + str(CURSOR_X) + ' ' + str(CURSOR_Y))
 
 
@@ -255,12 +259,12 @@ def act_down(_=None):
 
 def act_pgup(_=None):
     xkey('Page_Up')
-    set_status('PgUp')
+    set_status('Page Up')
 
 
 def act_pgdn(_=None):
     xkey('Page_Down')
-    set_status('PgDn')
+    set_status('Page Down')
 
 
 def act_copy(_=None):
@@ -275,44 +279,44 @@ def act_paste(_=None):
 
 def act_sel_all(_=None):
     xkey('ctrl+a')
-    set_status('Select All')
+    set_status('Select all')
 
 
 def act_right_click(_=None):
     xclick(3)
-    set_status('Right Click')
+    set_status('Right click')
 
 
 def act_scroll_up(_=None):
     xclick(4)
-    set_status('Scroll Up')
+    set_status('Scroll up')
 
 
 def act_scroll_down(_=None):
     xclick(5)
-    set_status('Scroll Down')
+    set_status('Scroll down')
 
 
 def act_zoom_in(_=None):
     xkey('ctrl+plus')
-    set_status('Zoom +')
+    set_status('Zoom in')
 
 
 def act_zoom_out(_=None):
     xkey('ctrl+minus')
-    set_status('Zoom -')
+    set_status('Zoom out')
 
 
 def act_fast(_=None):
     global SHOT_INTERVAL
     SHOT_INTERVAL = 1
-    set_status('Fast 1s')
+    set_status('Fast mode 1s')
 
 
 def act_slow(_=None):
     global SHOT_INTERVAL
     SHOT_INTERVAL = 5
-    set_status('Slow 5s')
+    set_status('Slow mode 5s')
 
 
 def act_type_submit(_=None):
@@ -383,8 +387,7 @@ def refresh_downloads_panel(_=None):
 
 def prune_browser_cache(_=None):
     removed = prune_profile(STATE['profile_dir'])
-    count_text = str(len(removed))
-    set_status('Pruned browser cache paths: ' + count_text)
+    set_status('Pruned browser cache paths: ' + str(len(removed)))
     refresh_state_panel()
 
 
@@ -545,6 +548,35 @@ def capture_frame_once():
     return False
 
 
+def draw_cursor_overlay(pil_img):
+    draw = ImageDraw.Draw(pil_img)
+    x_val = int(round((float(CURSOR_X) / float(SCREEN_W)) * pil_img.size[0]))
+    y_val = int(round((float(CURSOR_Y) / float(SCREEN_H)) * pil_img.size[1]))
+    x_val = max(0, min(pil_img.size[0] - 1, x_val))
+    y_val = max(0, min(pil_img.size[1] - 1, y_val))
+
+    r_outer = max(10, int(round(min(pil_img.size) * 0.02)))
+    r_inner = max(4, int(round(r_outer * 0.45)))
+    line_len = max(14, int(round(r_outer * 1.7)))
+    line_gap = max(6, int(round(r_outer * 0.45)))
+    color_main = '#00ff66'
+    color_outline = '#000000'
+
+    draw.ellipse((x_val - r_outer - 2, y_val - r_outer - 2, x_val + r_outer + 2, y_val + r_outer + 2), outline=color_outline, width=4)
+    draw.ellipse((x_val - r_outer, y_val - r_outer, x_val + r_outer, y_val + r_outer), outline=color_main, width=3)
+    draw.ellipse((x_val - r_inner, y_val - r_inner, x_val + r_inner, y_val + r_inner), fill=color_main, outline='white', width=1)
+
+    draw.line((x_val - line_len, y_val, x_val - line_gap, y_val), fill=color_outline, width=5)
+    draw.line((x_val + line_gap, y_val, x_val + line_len, y_val), fill=color_outline, width=5)
+    draw.line((x_val, y_val - line_len, x_val, y_val - line_gap), fill=color_outline, width=5)
+    draw.line((x_val, y_val + line_gap, x_val, y_val + line_len), fill=color_outline, width=5)
+
+    draw.line((x_val - line_len, y_val, x_val - line_gap, y_val), fill=color_main, width=3)
+    draw.line((x_val + line_gap, y_val, x_val + line_len, y_val), fill=color_main, width=3)
+    draw.line((x_val, y_val - line_len, x_val, y_val - line_gap), fill=color_main, width=3)
+    draw.line((x_val, y_val + line_gap, x_val, y_val + line_len), fill=color_main, width=3)
+
+
 def refresh_frame_widget():
     if not os.path.exists(FRAME_PATH) or os.path.getsize(FRAME_PATH) <= 0:
         return False
@@ -553,11 +585,11 @@ def refresh_frame_widget():
         width_value, height_value = pil_img.size
         if width_value > SHOT_WIDTH:
             new_height = int(round((float(SHOT_WIDTH) / float(width_value)) * float(height_value)))
-            pil_img = pil_img.resize((SHOT_WIDTH, max(1, new_height)))
-        output_path = os.path.join(STATE['root'], 'frame-low.jpg')
-        pil_img.save(output_path, format='JPEG', quality=SHOT_JPEG_QUALITY, optimize=True)
-        with open(output_path, 'rb') as handle:
-            img.value = handle.read()
+            pil_img = pil_img.resize((SHOT_WIDTH, max(1, new_height)), Image.LANCZOS)
+        draw_cursor_overlay(pil_img)
+        buffer = BytesIO()
+        pil_img.save(buffer, format='JPEG', quality=SHOT_JPEG_QUALITY, optimize=True, progressive=True)
+        img.value = buffer.getvalue()
         return True
     except Exception:
         try:
@@ -574,7 +606,7 @@ def screenshot_loop():
         ok = capture_frame_once()
         if ok and refresh_frame_widget():
             FRAME_COUNT += 1
-            status.value = 'Frame #' + str(FRAME_COUNT) + ' - ' + LAST_ACTION
+            status.value = status_text()
         else:
             status.value = 'Frame #' + str(FRAME_COUNT) + ' - Failed to capture screenshot'
         time.sleep(SHOT_INTERVAL)
@@ -589,8 +621,8 @@ def heartbeat_loop():
 def _ag_click(coords):
     try:
         x_str, y_str = coords.split(',')
-        x_val = max(0, min(SCREEN_W, int(float(x_str))))
-        y_val = max(0, min(SCREEN_H, int(float(y_str))))
+        x_val = max(0, min(SCREEN_W - 1, int(float(x_str))))
+        y_val = max(0, min(SCREEN_H - 1, int(float(y_str))))
         xmove(x_val, y_val)
         time.sleep(0.05)
         xclick(1)
@@ -602,8 +634,8 @@ def _ag_click(coords):
 def _ag_rclick(coords):
     try:
         x_str, y_str = coords.split(',')
-        x_val = max(0, min(SCREEN_W, int(float(x_str))))
-        y_val = max(0, min(SCREEN_H, int(float(y_str))))
+        x_val = max(0, min(SCREEN_W - 1, int(float(x_str))))
+        y_val = max(0, min(SCREEN_H - 1, int(float(y_str))))
         xmove(x_val, y_val)
         time.sleep(0.05)
         xclick(3)
@@ -623,17 +655,17 @@ def coords_from_dom_event(event_value):
     if data_x is not None and data_y is not None:
         x_val = int(float(data_x))
         y_val = int(float(data_y))
-        return max(0, min(SCREEN_W, x_val)), max(0, min(SCREEN_H, y_val))
+        return max(0, min(SCREEN_W - 1, x_val)), max(0, min(SCREEN_H - 1, y_val))
 
     if rel_x is not None and rel_y is not None and width_val and height_val:
         x_scaled = int(round((float(rel_x) / float(width_val)) * SCREEN_W))
         y_scaled = int(round((float(rel_y) / float(height_val)) * SCREEN_H))
-        return max(0, min(SCREEN_W, x_scaled)), max(0, min(SCREEN_H, y_scaled))
+        return max(0, min(SCREEN_W - 1, x_scaled)), max(0, min(SCREEN_H - 1, y_scaled))
 
     if rel_x is not None and rel_y is not None:
         x_val = int(float(rel_x))
         y_val = int(float(rel_y))
-        return max(0, min(SCREEN_W, x_val)), max(0, min(SCREEN_H, y_val))
+        return max(0, min(SCREEN_W - 1, x_val)), max(0, min(SCREEN_H - 1, y_val))
 
     raise RuntimeError('No usable coordinates in event')
 
@@ -663,7 +695,7 @@ def bind_image_events():
     try:
         IMAGE_EVENT = Event(
             source=img,
-            watched_events=['click', 'contextmenu']
+            watched_events=['click', 'mousedown', 'mouseup', 'contextmenu', 'touchstart', 'touchend']
         )
         IMAGE_EVENT.prevent_default_action = True
         IMAGE_EVENT.wait = 0
@@ -757,7 +789,7 @@ def build_image_bridge_script():
     var images = Array.from(document.querySelectorAll('img'));
     images = images.filter(function(node) {
       var rect = node.getBoundingClientRect();
-      return rect.width > 120 && rect.height > 80;
+      return rect.width > 140 && rect.height > 90;
     });
     if (!images.length) return null;
     var best = images[0];
@@ -778,13 +810,25 @@ def build_image_bridge_script():
     if (!rect.width || !rect.height) return '0,0';
     var x = Math.round(((clientX - rect.left) / rect.width) * 1280);
     var y = Math.round(((clientY - rect.top) / rect.height) * 800);
-    return clamp(x, 0, 1280) + ',' + clamp(y, 0, 800);
+    return clamp(x, 0, 1279) + ',' + clamp(y, 0, 799);
   }
 
   function flash(image) {
     var old = image.style.boxShadow;
-    image.style.boxShadow = '0 0 0 3px rgba(34,197,94,0.65), 0 0 28px rgba(34,197,94,0.45)';
+    image.style.boxShadow = '0 0 0 3px rgba(34,197,94,0.75), 0 0 28px rgba(34,197,94,0.45)';
     setTimeout(function() { image.style.boxShadow = old || '0 0 0 2px rgba(34,197,94,0.45)'; }, 180);
+  }
+
+  function sendLeft(image, clientX, clientY) {
+    var payload = coordsFromPoint(image, clientX, clientY);
+    flash(image);
+    kernelExecute('_ag_click', payload);
+  }
+
+  function sendRight(image, clientX, clientY) {
+    var payload = coordsFromPoint(image, clientX, clientY);
+    flash(image);
+    kernelExecute('_ag_rclick', payload);
   }
 
   function attach() {
@@ -806,59 +850,112 @@ def build_image_bridge_script():
 
     var touchTimer = null;
     var touchMoved = false;
+    var longPressed = false;
+    var startX = 0;
+    var startY = 0;
+
+    image.addEventListener('pointerdown', function(ev) {
+      if (ev.pointerType === 'touch') {
+        startX = ev.clientX;
+        startY = ev.clientY;
+        touchMoved = false;
+        longPressed = false;
+        if (touchTimer) clearTimeout(touchTimer);
+        touchTimer = setTimeout(function() {
+          longPressed = true;
+          sendRight(image, startX, startY);
+          touchTimer = null;
+        }, 520);
+      }
+    }, true);
+
+    image.addEventListener('pointermove', function(ev) {
+      if (ev.pointerType === 'touch') {
+        if (Math.abs(ev.clientX - startX) > 10 || Math.abs(ev.clientY - startY) > 10) {
+          touchMoved = true;
+          if (touchTimer) {
+            clearTimeout(touchTimer);
+            touchTimer = null;
+          }
+        }
+      }
+    }, true);
+
+    image.addEventListener('pointerup', function(ev) {
+      if (ev.pointerType === 'touch') {
+        if (touchTimer) {
+          clearTimeout(touchTimer);
+          touchTimer = null;
+        }
+        if (!touchMoved && !longPressed) {
+          sendLeft(image, ev.clientX, ev.clientY);
+        }
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    }, true);
 
     image.addEventListener('click', function(ev) {
       ev.preventDefault();
       ev.stopPropagation();
-      var payload = coordsFromPoint(image, ev.clientX, ev.clientY);
-      flash(image);
-      kernelExecute('_ag_click', payload);
+      sendLeft(image, ev.clientX, ev.clientY);
       return false;
+    }, true);
+
+    image.addEventListener('mousedown', function(ev) {
+      if (ev.button === 0) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
     }, true);
 
     image.addEventListener('contextmenu', function(ev) {
       ev.preventDefault();
       ev.stopPropagation();
-      var payload = coordsFromPoint(image, ev.clientX, ev.clientY);
-      flash(image);
-      kernelExecute('_ag_rclick', payload);
+      sendRight(image, ev.clientX, ev.clientY);
       return false;
     }, true);
 
     image.addEventListener('touchstart', function(ev) {
       if (!ev.changedTouches || !ev.changedTouches.length) return;
       touchMoved = false;
+      longPressed = false;
       var touch = ev.changedTouches[0];
-      var payload = coordsFromPoint(image, touch.clientX, touch.clientY);
+      startX = touch.clientX;
+      startY = touch.clientY;
       if (touchTimer) clearTimeout(touchTimer);
       touchTimer = setTimeout(function() {
-        flash(image);
-        kernelExecute('_ag_rclick', payload);
+        longPressed = true;
+        sendRight(image, startX, startY);
         touchTimer = null;
       }, 520);
-    }, { passive: true });
+    }, { passive: false, capture: true });
 
-    image.addEventListener('touchmove', function() {
-      touchMoved = true;
-      if (touchTimer) {
-        clearTimeout(touchTimer);
-        touchTimer = null;
+    image.addEventListener('touchmove', function(ev) {
+      if (!ev.changedTouches || !ev.changedTouches.length) return;
+      var touch = ev.changedTouches[0];
+      if (Math.abs(touch.clientX - startX) > 10 || Math.abs(touch.clientY - startY) > 10) {
+        touchMoved = true;
+        if (touchTimer) {
+          clearTimeout(touchTimer);
+          touchTimer = null;
+        }
       }
-    }, { passive: true });
+    }, { passive: false, capture: true });
 
     image.addEventListener('touchend', function(ev) {
       if (!ev.changedTouches || !ev.changedTouches.length) return;
       var touch = ev.changedTouches[0];
-      var payload = coordsFromPoint(image, touch.clientX, touch.clientY);
       if (touchTimer) {
         clearTimeout(touchTimer);
         touchTimer = null;
-        if (!touchMoved) {
-          flash(image);
-          kernelExecute('_ag_click', payload);
-        }
       }
-    }, { passive: true });
+      if (!touchMoved && !longPressed) {
+        sendLeft(image, touch.clientX, touch.clientY);
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, { passive: false, capture: true });
   }
 
   attach();
@@ -881,9 +978,10 @@ def create_button(label_text, handler, style_text=''):
     button = widgets.Button(
         description=label_text,
         button_style=style_text,
-        layout=widgets.Layout(width='120px', height='44px', margin='4px')
+        layout=widgets.Layout(width='150px', min_width='150px', height='50px', margin='5px')
     )
     button.style.font_weight = '600'
+    button.style.font_size = '13px'
     button.on_click(handler)
     return button
 
@@ -894,8 +992,8 @@ def restore_state_into_widgets():
     if payload.get('last_url'):
         url.value = str(payload.get('last_url'))
     try:
-        CURSOR_X = max(0, min(SCREEN_W, int(payload.get('cursor_x', CURSOR_X))))
-        CURSOR_Y = max(0, min(SCREEN_H, int(payload.get('cursor_y', CURSOR_Y))))
+        CURSOR_X = max(0, min(SCREEN_W - 1, int(payload.get('cursor_x', CURSOR_X))))
+        CURSOR_Y = max(0, min(SCREEN_H - 1, int(payload.get('cursor_y', CURSOR_Y))))
     except Exception:
         pass
     if payload.get('github_owner'):
@@ -914,11 +1012,11 @@ def build_ui():
     global img, status, heartbeat, url, type_txt, info_html, downloads_html, state_html, github_status_html
     global github_token, github_owner, github_repo, github_branch, github_prefix, github_mode, github_commit_message
 
-    img = widgets.Image(format='jpeg', width='100%', layout=widgets.Layout(width='100%', max_width='960px', object_fit='contain'))
+    img = widgets.Image(format='jpeg', width='100%', layout=widgets.Layout(width='100%', max_width='1120px', object_fit='contain', border='2px solid #22c55e'))
     status = widgets.Label(value='Frame #0 - last action')
     heartbeat = widgets.Label(value='Heartbeat: starting')
     url = widgets.Text(value=URL_GOOGLE, placeholder='Enter URL')
-    type_txt = widgets.Textarea(value='', placeholder='Enter text to type here', layout=widgets.Layout(height='80px'))
+    type_txt = widgets.Textarea(value='', placeholder='Enter text to type here', layout=widgets.Layout(height='90px'))
 
     github_token = widgets.Password(value='', placeholder='Paste GitHub token here')
     github_owner = widgets.Text(value=DEFAULT_OWNER, placeholder='GitHub owner')
@@ -938,8 +1036,9 @@ def build_ui():
             'CPU: ' + cpu_text,
             'Persistence: ' + persistence_text,
             'Existing Chrome session found: ' + previous_session,
-            'Image stream is compressed and resized to reduce bandwidth on mobile.',
-            'If touch click is flaky on Kaggle mobile, use the cursor move buttons and Click button below the image.',
+            'Visible green crosshair is drawn on every frame so you can see the controlled cursor.',
+            'Image stream is balanced for mobile: clearer than before but still compressed.',
+            'If direct touch click is flaky on Kaggle mobile, use Move Cursor + Click Cursor buttons.',
             'Chrome profile and downloads are saved so Google login and downloaded files survive reruns when Kaggle persistence is enabled.',
         ],
         '#22c55e'
@@ -949,80 +1048,83 @@ def build_ui():
     github_status_html = widgets.HTML(html_message_box('GitHub upload', ['Paste token, validate access, then upload bundle.'], '#f59e0b'))
 
     row1 = widgets.HBox([
-        create_button('🌐 Go', act_go, 'success'),
-        create_button('◀ Back', act_back),
-        create_button('▶ Fwd', act_fwd),
-        create_button('🔄 Reload', act_reload),
-        create_button('🏠 Home', act_home),
-    ])
+        create_button('Go URL', act_go, 'success'),
+        create_button('Back', act_back),
+        create_button('Forward', act_fwd),
+        create_button('Reload', act_reload),
+        create_button('Home', act_home),
+    ], layout=widgets.Layout(flex_flow='row wrap'))
 
     row2 = widgets.HBox([
-        create_button('↵ Enter', act_enter),
-        create_button('Esc', act_esc),
-        create_button('⇥ Tab', act_tab),
-        create_button('▲', act_up),
-        create_button('▼', act_down),
-        create_button('PgUp', act_pgup),
-        create_button('PgDn', act_pgdn),
-    ])
+        create_button('Enter', act_enter),
+        create_button('Escape', act_esc),
+        create_button('Tab', act_tab),
+        create_button('Arrow Up', act_up),
+        create_button('Arrow Down', act_down),
+        create_button('Page Up', act_pgup),
+        create_button('Page Down', act_pgdn),
+    ], layout=widgets.Layout(flex_flow='row wrap'))
 
     row3 = widgets.HBox([
-        create_button('⎘ Copy', act_copy),
-        create_button('⌘ Paste', act_paste),
-        create_button('Sel All', act_sel_all),
+        create_button('Copy', act_copy),
+        create_button('Paste', act_paste),
+        create_button('Select All', act_sel_all),
         create_button('Right Click', act_right_click),
-        create_button('▲ Scroll', act_scroll_up),
-        create_button('▼ Scroll', act_scroll_down),
-        create_button('🔍+', act_zoom_in),
-        create_button('🔍-', act_zoom_out),
-        create_button('📸 Fast 1s', act_fast, 'warning'),
-        create_button('📸 Slow 5s', act_slow, 'info'),
-    ])
+        create_button('Scroll Up', act_scroll_up),
+        create_button('Scroll Down', act_scroll_down),
+        create_button('Zoom In', act_zoom_in),
+        create_button('Zoom Out', act_zoom_out),
+        create_button('Fast 1s', act_fast, 'warning'),
+        create_button('Slow 5s', act_slow),
+    ], layout=widgets.Layout(flex_flow='row wrap'))
 
     row4 = widgets.HBox([
-        create_button('Type + Enter', act_type_submit, 'primary'),
+        create_button('Type + Enter', act_type_submit, 'success'),
         create_button('Type Only', act_type_only),
         create_button('Google Login', open_google_login),
         create_button('Downloads', open_chrome_downloads),
         create_button('Kaggle CPU', open_kaggle_cpu),
-    ])
+    ], layout=widgets.Layout(flex_flow='row wrap'))
 
     row5 = widgets.HBox([
-        create_button('Codex Web', open_codex_web, 'success'),
-        create_button('Codex App', open_codex_app_page, 'success'),
-        create_button('Codex Releases', open_codex_releases, 'success'),
-        create_button('Antigravity App', open_antigravity_page, 'success'),
-        create_button('Open Both', open_both_apps, 'success'),
-    ])
+        create_button('Codex Web', open_codex_web),
+        create_button('Codex App Page', open_codex_app_page),
+        create_button('Codex Releases', open_codex_releases),
+        create_button('Antigravity App', open_antigravity_page),
+        create_button('Open Both Apps', open_both_apps),
+    ], layout=widgets.Layout(flex_flow='row wrap'))
 
     row6 = widgets.HBox([
-        create_button('⟵ Cursor', act_move_left),
-        create_button('⟶ Cursor', act_move_right),
-        create_button('⟰ Cursor', act_move_up),
-        create_button('⟱ Cursor', act_move_down),
-        create_button('◎ Center', act_center_cursor),
-        create_button('● Click', act_click_cursor, 'success'),
-        create_button('◉ RClick', act_rclick_cursor),
-    ])
+        create_button('Move Left', act_move_left),
+        create_button('Move Up', act_move_up),
+        create_button('Move Down', act_move_down),
+        create_button('Move Right', act_move_right),
+        create_button('Center Cursor', act_center_cursor),
+        create_button('Click Cursor', act_click_cursor, 'success'),
+        create_button('Right Click Cursor', act_rclick_cursor),
+    ], layout=widgets.Layout(flex_flow='row wrap'))
 
     row7 = widgets.HBox([
         create_button('Refresh Downloads', refresh_downloads_panel),
-        create_button('Save Session State', save_runtime_state, 'info'),
-        create_button('Prune Cache', prune_browser_cache, 'warning'),
-        create_button('Clear Downloads', clear_downloads, 'warning'),
-        create_button('Stop', shutdown_runtime, 'danger'),
-    ])
+        create_button('Save Session', save_runtime_state),
+        create_button('Prune Browser Cache', prune_browser_cache),
+        create_button('Clear Downloads', clear_downloads),
+        create_button('Stop Runtime', shutdown_runtime, 'danger'),
+    ], layout=widgets.Layout(flex_flow='row wrap'))
 
-    github_row1 = widgets.HBox([github_token])
-    github_row2 = widgets.HBox([github_owner, github_repo, github_branch])
-    github_row3 = widgets.HBox([github_prefix, github_mode])
+    github_row1 = widgets.HBox([github_token], layout=widgets.Layout(flex_flow='row wrap'))
+    github_row2 = widgets.HBox([github_owner, github_repo, github_branch], layout=widgets.Layout(flex_flow='row wrap'))
+    github_row3 = widgets.HBox([github_prefix, github_mode], layout=widgets.Layout(flex_flow='row wrap'))
     github_row4 = widgets.HBox([
         github_commit_message,
-        create_button('Validate GitHub Access', validate_github_access, 'info'),
-        create_button('Upload Bundle to GitHub', push_bundle_to_github, 'warning'),
-    ])
+        create_button('Validate GitHub', validate_github_access),
+        create_button('Upload Bundle', push_bundle_to_github, 'success'),
+    ], layout=widgets.Layout(flex_flow='row wrap'))
 
-    layout = widgets.VBox([
+    refresh_state_panel()
+    restore_state_into_widgets()
+
+    display(widgets.VBox([
         info_html,
         img,
         status,
@@ -1036,22 +1138,20 @@ def build_ui():
         row5,
         row6,
         row7,
-        widgets.HTML('<b>Persistent session</b>'),
+        widgets.HTML('<h3 style="margin:12px 0 6px;">Persistent session</h3>'),
         state_html,
-        widgets.HTML('<b>Saved downloads</b>'),
+        widgets.HTML('<h3 style="margin:12px 0 6px;">Downloads</h3>'),
         downloads_html,
-        widgets.HTML('<b>GitHub upload</b><div style="font-size:12px;color:#94a3b8;">Paste a GitHub token with repo contents write access, validate it, then upload the bundle. This will create or update browser_controller_main.py and browser_controller_support.py automatically.</div>'),
+        widgets.HTML('<h3 style="margin:12px 0 6px;">GitHub upload</h3>'),
+        github_status_html,
         github_row1,
         github_row2,
         github_row3,
         github_row4,
-        github_status_html,
-    ])
-    display(layout)
+    ]))
+
     bridge_ok = bind_image_events()
     display(HTML(build_image_bridge_script()))
-    restore_state_into_widgets()
-    refresh_state_panel()
     if bridge_ok:
         set_status('Ready - widget click bridge active')
     else:
@@ -1068,15 +1168,13 @@ def start_threads():
 
 def main():
     launch_runtime()
-    build_ui()
-    try:
-        xmove(CURSOR_X, CURSOR_Y)
-    except Exception:
-        pass
     try_register_callbacks()
+    build_ui()
+    xmove(CURSOR_X, CURSOR_Y)
     start_threads()
     refresh_downloads_panel()
-    set_status('Ready')
+    save_runtime_state()
 
 
-main()
+if __name__ == '__main__':
+    main()
