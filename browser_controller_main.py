@@ -13,6 +13,7 @@ import subprocess
 
 import requests
 import ipywidgets as widgets
+from PIL import Image
 from IPython.display import display, HTML
 from xvfbwrapper import Xvfb
 
@@ -65,6 +66,11 @@ LOG_PATH = os.path.join(STATE['logs_dir'], 'runtime.log')
 FRAME_COUNT = 0
 LAST_ACTION = 'Ready'
 SHOT_INTERVAL = 3
+SHOT_WIDTH = 960
+SHOT_JPEG_QUALITY = 45
+CURSOR_X = SCREEN_W // 2
+CURSOR_Y = SCREEN_H // 2
+CURSOR_STEP = 60
 STOP_EVENT = threading.Event()
 XVFB_HANDLE = None
 BROWSER_PROCESS = None
@@ -105,7 +111,7 @@ def set_status(text_value):
     global LAST_ACTION
     LAST_ACTION = text_value
     if status is not None:
-        status.value = 'Frame #' + str(FRAME_COUNT) + ' - ' + text_value
+        status.value = 'Frame #' + str(FRAME_COUNT) + ' - ' + text_value + ' · Cursor ' + str(CURSOR_X) + ',' + str(CURSOR_Y)
     log_line(text_value)
 
 
@@ -128,11 +134,54 @@ def xtype(text_value):
 
 
 def xmove(x_value, y_value):
-    xdotool('mousemove ' + str(int(x_value)) + ' ' + str(int(y_value)))
+    global CURSOR_X, CURSOR_Y
+    CURSOR_X = max(0, min(SCREEN_W, int(x_value)))
+    CURSOR_Y = max(0, min(SCREEN_H, int(y_value)))
+    xdotool('mousemove ' + str(CURSOR_X) + ' ' + str(CURSOR_Y))
 
 
 def xclick(button_number):
     xdotool('click ' + str(int(button_number)))
+
+
+def move_cursor_by(dx_value, dy_value, label_text):
+    xmove(CURSOR_X + dx_value, CURSOR_Y + dy_value)
+    set_status(label_text)
+
+
+def act_move_left(_=None):
+    move_cursor_by(-CURSOR_STEP, 0, 'Cursor left')
+
+
+def act_move_right(_=None):
+    move_cursor_by(CURSOR_STEP, 0, 'Cursor right')
+
+
+def act_move_up(_=None):
+    move_cursor_by(0, -CURSOR_STEP, 'Cursor up')
+
+
+def act_move_down(_=None):
+    move_cursor_by(0, CURSOR_STEP, 'Cursor down')
+
+
+def act_click_cursor(_=None):
+    xmove(CURSOR_X, CURSOR_Y)
+    time.sleep(0.03)
+    xclick(1)
+    set_status('Cursor click')
+
+
+def act_rclick_cursor(_=None):
+    xmove(CURSOR_X, CURSOR_Y)
+    time.sleep(0.03)
+    xclick(3)
+    set_status('Cursor right click')
+
+
+def act_center_cursor(_=None):
+    xmove(SCREEN_W // 2, SCREEN_H // 2)
+    set_status('Cursor centered')
 
 
 def browser_go(target_url):
@@ -360,6 +409,8 @@ def state_payload():
     payload['last_url'] = url.value.strip() if url is not None else ''
     payload['last_action'] = LAST_ACTION
     payload['last_saved_at'] = now_text()
+    payload['cursor_x'] = CURSOR_X
+    payload['cursor_y'] = CURSOR_Y
     payload['github_owner'] = github_owner.value.strip() if github_owner is not None else DEFAULT_OWNER
     payload['github_repo'] = github_repo.value.strip() if github_repo is not None else DEFAULT_REPO
     payload['github_branch'] = github_branch.value.strip() if github_branch is not None else DEFAULT_BRANCH
@@ -495,11 +546,26 @@ def capture_frame_once():
 
 
 def refresh_frame_widget():
-    if os.path.exists(FRAME_PATH) and os.path.getsize(FRAME_PATH) > 0:
-        with open(FRAME_PATH, 'rb') as handle:
+    if not os.path.exists(FRAME_PATH) or os.path.getsize(FRAME_PATH) <= 0:
+        return False
+    try:
+        pil_img = Image.open(FRAME_PATH).convert('RGB')
+        width_value, height_value = pil_img.size
+        if width_value > SHOT_WIDTH:
+            new_height = int(round((float(SHOT_WIDTH) / float(width_value)) * float(height_value)))
+            pil_img = pil_img.resize((SHOT_WIDTH, max(1, new_height)))
+        output_path = os.path.join(STATE['root'], 'frame-low.jpg')
+        pil_img.save(output_path, format='JPEG', quality=SHOT_JPEG_QUALITY, optimize=True)
+        with open(output_path, 'rb') as handle:
             img.value = handle.read()
         return True
-    return False
+    except Exception:
+        try:
+            with open(FRAME_PATH, 'rb') as handle:
+                img.value = handle.read()
+            return True
+        except Exception:
+            return False
 
 
 def screenshot_loop():
@@ -812,15 +878,26 @@ def try_register_callbacks():
 
 
 def create_button(label_text, handler, style_text=''):
-    button = widgets.Button(description=label_text, button_style=style_text)
+    button = widgets.Button(
+        description=label_text,
+        button_style=style_text,
+        layout=widgets.Layout(width='120px', height='44px', margin='4px')
+    )
+    button.style.font_weight = '600'
     button.on_click(handler)
     return button
 
 
 def restore_state_into_widgets():
+    global CURSOR_X, CURSOR_Y
     payload = load_runtime_state()
     if payload.get('last_url'):
         url.value = str(payload.get('last_url'))
+    try:
+        CURSOR_X = max(0, min(SCREEN_W, int(payload.get('cursor_x', CURSOR_X))))
+        CURSOR_Y = max(0, min(SCREEN_H, int(payload.get('cursor_y', CURSOR_Y))))
+    except Exception:
+        pass
     if payload.get('github_owner'):
         github_owner.value = str(payload.get('github_owner'))
     if payload.get('github_repo'):
@@ -837,7 +914,7 @@ def build_ui():
     global img, status, heartbeat, url, type_txt, info_html, downloads_html, state_html, github_status_html
     global github_token, github_owner, github_repo, github_branch, github_prefix, github_mode, github_commit_message
 
-    img = widgets.Image(format='png', width='100%', layout=widgets.Layout(width='100%', max_width='1280px', object_fit='contain'))
+    img = widgets.Image(format='jpeg', width='100%', layout=widgets.Layout(width='100%', max_width='960px', object_fit='contain'))
     status = widgets.Label(value='Frame #0 - last action')
     heartbeat = widgets.Label(value='Heartbeat: starting')
     url = widgets.Text(value=URL_GOOGLE, placeholder='Enter URL')
@@ -861,6 +938,8 @@ def build_ui():
             'CPU: ' + cpu_text,
             'Persistence: ' + persistence_text,
             'Existing Chrome session found: ' + previous_session,
+            'Image stream is compressed and resized to reduce bandwidth on mobile.',
+            'If touch click is flaky on Kaggle mobile, use the cursor move buttons and Click button below the image.',
             'Chrome profile and downloads are saved so Google login and downloaded files survive reruns when Kaggle persistence is enabled.',
         ],
         '#22c55e'
@@ -917,6 +996,16 @@ def build_ui():
     ])
 
     row6 = widgets.HBox([
+        create_button('⟵ Cursor', act_move_left),
+        create_button('⟶ Cursor', act_move_right),
+        create_button('⟰ Cursor', act_move_up),
+        create_button('⟱ Cursor', act_move_down),
+        create_button('◎ Center', act_center_cursor),
+        create_button('● Click', act_click_cursor, 'success'),
+        create_button('◉ RClick', act_rclick_cursor),
+    ])
+
+    row7 = widgets.HBox([
         create_button('Refresh Downloads', refresh_downloads_panel),
         create_button('Save Session State', save_runtime_state, 'info'),
         create_button('Prune Cache', prune_browser_cache, 'warning'),
@@ -946,6 +1035,7 @@ def build_ui():
         row4,
         row5,
         row6,
+        row7,
         widgets.HTML('<b>Persistent session</b>'),
         state_html,
         widgets.HTML('<b>Saved downloads</b>'),
@@ -979,6 +1069,10 @@ def start_threads():
 def main():
     launch_runtime()
     build_ui()
+    try:
+        xmove(CURSOR_X, CURSOR_Y)
+    except Exception:
+        pass
     try_register_callbacks()
     start_threads()
     refresh_downloads_panel()
