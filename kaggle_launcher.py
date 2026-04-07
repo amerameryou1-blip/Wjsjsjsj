@@ -2,9 +2,9 @@ import os
 import sys
 import subprocess
 
-
 # Paste this whole file into one Kaggle notebook cell and run it.
-# Change these values only if your GitHub repository is different.
+# The website uploads the bundle to GitHub.
+# This launcher downloads the bundle from GitHub and opens the dashboard.
 OWNER = 'amerameryou1-blip'
 REPO = 'Wjsjsjsj'
 BRANCH = 'main'
@@ -42,14 +42,14 @@ def repo_path(prefix_value, file_name):
 
 
 def raw_url(owner_value, repo_value, branch_value, path_value):
-    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + path_value.strip('/')
+    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + str(path_value).strip('/')
 
 
 def fetch_bundle(requests_module):
     paths_map = {}
     for file_name in BUNDLE_FILES:
-        repo_file_path = repo_path(PREFIX, file_name)
-        url_value = raw_url(OWNER, REPO, BRANCH, repo_file_path)
+        remote_path = repo_path(PREFIX, file_name)
+        url_value = raw_url(OWNER, REPO, BRANCH, remote_path)
         print('Fetching:', url_value)
         response = requests_module.get(url_value, timeout=60)
         response.raise_for_status()
@@ -83,19 +83,18 @@ def run_bundle(paths_map):
 
 
 def main():
-    print('Simple Kaggle launcher')
-    print('Owner:', OWNER)
-    print('Repo:', REPO)
+    print('One-Tap Kaggle Controller Launcher')
+    print('Repo:', OWNER + '/' + REPO)
     print('Branch:', BRANCH)
     print('Prefix:', PREFIX or '(repo root)')
-    print('Installing small Python packages...')
+    print('Installing notebook packages...')
     pip_install(['requests', 'ipywidgets'])
 
     import requests
 
-    print('Downloading bundle files from GitHub...')
+    print('Downloading bundle from GitHub...')
     paths_map = fetch_bundle(requests)
-    print('Starting dashboard...')
+    print('Opening dashboard...')
     run_bundle(paths_map)
 
 
