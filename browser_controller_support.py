@@ -1,67 +1,112 @@
 import os
+import re
 import json
 import html
 import time
+import base64
+import shutil
+import subprocess
+from urllib.parse import quote_plus
+
+
+DISPLAY_VALUE = ':99'
+SCREEN_W = 1280
+SCREEN_H = 800
+
+URL_GOOGLE = 'https://www.google.com/'
+URL_GOOGLE_LOGIN = 'https://accounts.google.com/'
+URL_KAGGLE_CPU_SEARCH = 'https://www.google.com/search?q=' + quote_plus('Kaggle notebook CPU cores runtime')
+URL_CODEX_WEB = 'https://chatgpt.com/codex'
+URL_CODEX_APP = 'https://developers.openai.com/codex/app'
+URL_CODEX_CLI_RELEASES = 'https://github.com/openai/codex/releases/latest'
+URL_ANTIGRAVITY_APP = 'https://antigravity.google/download'
 
 DEFAULT_OWNER = 'amerameryou1-blip'
 DEFAULT_REPO = 'Wjsjsjsj'
 DEFAULT_BRANCH = 'main'
 DEFAULT_PREFIX = ''
-DEFAULT_README_PATH = 'README.md'
-DEFAULT_SUPPORT_PATH = 'browser_controller_support.py'
 DEFAULT_MAIN_PATH = 'browser_controller_main.py'
-DEFAULT_FULL_PATH = 'browser_controller_full.py'
-DEFAULT_LAUNCHER_PATH = 'kaggle_launcher.py'
-BUNDLE_FILE_ORDER = [
-    DEFAULT_README_PATH,
-    DEFAULT_SUPPORT_PATH,
-    DEFAULT_MAIN_PATH,
-    DEFAULT_FULL_PATH,
-    DEFAULT_LAUNCHER_PATH,
-]
-GOOGLE_HOME_URL = 'https://www.google.com/'
-ANTIGRAVITY_DOWNLOAD_URL = 'https://antigravity.google/download/linux'
-ANTIGRAVITY_DEB_COMMANDS = '\n'.join([
-    'sudo mkdir -p /etc/apt/keyrings',
-    'curl -fsSL https://us-central1-apt.pkg.dev/doc/repo-signing-key.gpg | sudo gpg --dearmor --yes -o /etc/apt/keyrings/antigravity-repo-key.gpg',
-    'echo "deb [signed-by=/etc/apt/keyrings/antigravity-repo-key.gpg] https://us-central1-apt.pkg.dev/projects/antigravity-auto-updater-dev/ antigravity-debian main" | sudo tee /etc/apt/sources.list.d/antigravity.list > /dev/null',
-    'sudo apt update',
-    'sudo apt install -y antigravity',
-    'antigravity',
-])
-ANTIGRAVITY_RPM_COMMANDS = '\n'.join([
-    "sudo tee /etc/yum.repos.d/antigravity.repo <<'EOL'",
-    '[antigravity-rpm]',
-    'name=Antigravity RPM Repository',
-    'baseurl=https://us-central1-yum.pkg.dev/projects/antigravity-auto-updater-dev/antigravity-rpm',
-    'enabled=1',
-    'gpgcheck=0',
-    'EOL',
-    'sudo dnf makecache',
-    'sudo dnf install -y antigravity',
-    'antigravity',
-])
+DEFAULT_SUPPORT_PATH = 'browser_controller_support.py'
+DEFAULT_README_PATH = 'README.md'
 
 
 def now_text():
     return time.strftime('%Y-%m-%d %H:%M:%S')
 
 
-def state_root():
-    if os.path.isdir('/kaggle/working'):
-        return os.path.join('/kaggle/working', 'simple_linux_controller')
-    return '/tmp/simple_linux_controller'
+def detect_state_root():
+    kaggle_working = '/kaggle/working'
+    if os.path.isdir(kaggle_working):
+        return os.path.join(kaggle_working, 'browser_controller_state')
+    return '/tmp/browser_controller_state'
 
 
 def ensure_state_dirs():
-    root = state_root()
-    bundle_dir = os.path.join(root, 'bundle')
-    os.makedirs(bundle_dir, exist_ok=True)
+    root = detect_state_root()
+    runtime_dir = os.path.join(root, 'runtime')
+    profile_dir = os.path.join(root, 'chrome-profile')
+    downloads_dir = os.path.join(root, 'downloads')
+    bundle_dir = os.path.join(root, 'bundle-cache')
+    state_json = os.path.join(root, 'state.json')
+    logs_dir = os.path.join(root, 'logs')
+
+    for path in [root, runtime_dir, profile_dir, downloads_dir, bundle_dir, logs_dir]:
+        os.makedirs(path, exist_ok=True)
+
+    os.environ['DISPLAY'] = DISPLAY_VALUE
+    os.environ['XDG_RUNTIME_DIR'] = runtime_dir
     return {
         'root': root,
+        'runtime_dir': runtime_dir,
+        'profile_dir': profile_dir,
+        'downloads_dir': downloads_dir,
         'bundle_dir': bundle_dir,
-        'config_path': os.path.join(root, 'controller_config.json'),
+        'state_json': state_json,
+        'logs_dir': logs_dir,
+        'persistent': root.startswith('/kaggle/working/'),
     }
+
+
+def display_env(extra_env=None):
+    env = dict(os.environ)
+    env['DISPLAY'] = DISPLAY_VALUE
+    env.setdefault('XDG_RUNTIME_DIR', '/tmp/browser-controller-runtime')
+    os.makedirs(env['XDG_RUNTIME_DIR'], exist_ok=True)
+    if extra_env:
+        env.update(extra_env)
+    return env
+
+
+def run_list(args, env=None, capture_output=True, check=False):
+    return subprocess.run(
+        args,
+        env=display_env(env),
+        text=True,
+        capture_output=capture_output,
+        check=check,
+    )
+
+
+def run_shell(command, env=None):
+    return subprocess.run(
+        command,
+        shell=True,
+        env=display_env(env),
+        text=True,
+        capture_output=True,
+    )
+
+
+def which_any(candidates):
+    for candidate in candidates:
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return None
+
+
+def find_browser_binary():
+    return which_any(['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium'])
 
 
 def file_read_text(path_value):
@@ -70,9 +115,6 @@ def file_read_text(path_value):
 
 
 def file_write_text(path_value, text_value):
-    parent = os.path.dirname(path_value)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
     with open(path_value, 'w', encoding='utf-8') as handle:
         handle.write(text_value)
 
@@ -86,132 +128,221 @@ def load_json(path_value, default_value):
 
 
 def save_json(path_value, data_value):
-    file_write_text(path_value, json.dumps(data_value, indent=2, ensure_ascii=False))
+    temp_path = path_value + '.tmp'
+    with open(temp_path, 'w', encoding='utf-8') as handle:
+        json.dump(data_value, handle, indent=2, ensure_ascii=False)
+    os.replace(temp_path, path_value)
 
 
-def repo_path(prefix_value, file_name):
-    clean_prefix = str(prefix_value or '').strip().strip('/')
-    if clean_prefix:
-        return clean_prefix + '/' + file_name
-    return file_name
+def detect_cpu_info():
+    count = os.cpu_count() or 1
+    model = 'Unknown CPU'
+    try:
+        with open('/proc/cpuinfo', 'r', encoding='utf-8', errors='ignore') as handle:
+            cpuinfo = handle.read()
+        match = re.search(r'model name\s*:\s*(.+)', cpuinfo)
+        if match:
+            model = match.group(1).strip()
+    except Exception:
+        pass
+    return str(count) + ' cores detected · ' + model
 
 
-def build_raw_url(owner_value, repo_value, branch_value, path_value):
-    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + str(path_value).strip('/')
+def profile_has_previous_session(profile_dir):
+    candidates = [
+        os.path.join(profile_dir, 'Default'),
+        os.path.join(profile_dir, 'Local State'),
+        os.path.join(profile_dir, 'First Run'),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return True
+    return False
 
 
-def fetch_text(requests_module, url_value, timeout=60):
-    response = requests_module.get(url_value, timeout=timeout)
-    response.raise_for_status()
-    return response.text
+def prune_profile(profile_dir):
+    removed = []
+    trash_names = [
+        'Cache',
+        'Code Cache',
+        'GPUCache',
+        'DawnCache',
+        'DawnGraphiteCache',
+        'GrShaderCache',
+        'GraphiteDawnCache',
+        'ShaderCache',
+        'Media Cache',
+        'Service Worker/CacheStorage',
+        'Default/Cache',
+        'Default/Code Cache',
+        'Default/GPUCache',
+        'Default/Media Cache',
+        'Default/Service Worker/CacheStorage',
+    ]
+    for name in trash_names:
+        path_value = os.path.join(profile_dir, name)
+        if os.path.isdir(path_value):
+            shutil.rmtree(path_value, ignore_errors=True)
+            removed.append(path_value)
+    return removed
 
 
-def fetch_bundle_files(requests_module, owner_value, repo_value, branch_value, prefix_value, file_names, target_dir):
-    os.makedirs(target_dir, exist_ok=True)
-    bundle_map = {}
-    for file_name in file_names:
-        remote_path = repo_path(prefix_value, file_name)
-        url_value = build_raw_url(owner_value, repo_value, branch_value, remote_path)
-        text_value = fetch_text(requests_module, url_value, timeout=60)
-        if file_name.endswith('.py'):
-            compile(text_value, file_name, 'exec')
-        local_path = os.path.join(target_dir, file_name)
-        file_write_text(local_path, text_value)
-        bundle_map[file_name] = {
-            'name': file_name,
-            'repo_path': remote_path,
-            'url': url_value,
-            'local_path': local_path,
-            'content': text_value,
-        }
-    return bundle_map
+def html_message_box(title_text, body_lines, accent='#22c55e'):
+    parts = []
+    parts.append('<div style="padding:12px;border:1px solid ' + accent + ';border-radius:14px;background:#0f172a;color:#e2e8f0;">')
+    parts.append('<div style="font-weight:700;color:' + accent + ';margin-bottom:6px;">' + html.escape(title_text) + '</div>')
+    for line in body_lines:
+        parts.append('<div style="margin-top:4px;">' + html.escape(line) + '</div>')
+    parts.append('</div>')
+    return ''.join(parts)
 
 
-def load_bundle_from_directory(base_dir, file_names):
-    if not os.path.isdir(base_dir):
-        return {}
-    bundle_map = {}
-    for file_name in file_names:
-        local_path = os.path.join(base_dir, file_name)
-        if not os.path.exists(local_path):
+def list_download_files_html(downloads_dir, limit_count=60):
+    items = []
+    if not os.path.isdir(downloads_dir):
+        return html_message_box('Downloads', ['No downloads directory yet.'], '#38bdf8')
+
+    paths = []
+    for name in os.listdir(downloads_dir):
+        full_path = os.path.join(downloads_dir, name)
+        try:
+            stat_info = os.stat(full_path)
+            paths.append((stat_info.st_mtime, name, stat_info.st_size))
+        except Exception:
             continue
-        bundle_map[file_name] = {
-            'name': file_name,
-            'repo_path': file_name,
-            'url': '',
-            'local_path': local_path,
-            'content': file_read_text(local_path),
-        }
-    return bundle_map
+
+    paths.sort(reverse=True)
+    if not paths:
+        return html_message_box('Downloads', ['No files downloaded yet.', downloads_dir], '#38bdf8')
+
+    items.append('<div style="padding:12px;border:1px solid #334155;border-radius:14px;background:#020617;color:#e2e8f0;">')
+    items.append('<div style="font-weight:700;color:#38bdf8;margin-bottom:8px;">Saved downloads</div>')
+    items.append('<div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">' + html.escape(downloads_dir) + '</div>')
+    items.append('<ul style="margin:0;padding-left:18px;">')
+    shown = 0
+    for _, name, size_value in paths:
+        shown += 1
+        if shown > limit_count:
+            break
+        size_mb = '{:.2f}'.format(float(size_value) / (1024.0 * 1024.0))
+        items.append('<li style="margin:4px 0;">' + html.escape(name) + ' <span style="color:#94a3b8;">(' + size_mb + ' MB)</span></li>')
+    items.append('</ul></div>')
+    return ''.join(items)
 
 
-def merge_bundle_maps(*bundle_maps):
-    merged = {}
-    for bundle_map in bundle_maps:
-        for key, value in (bundle_map or {}).items():
-            merged[key] = value
-    return merged
+def github_headers(token_value):
+    return {
+        'Accept': 'application/vnd.github+json',
+        'Authorization': 'Bearer ' + token_value.strip(),
+        'X-GitHub-Api-Version': '2022-11-28',
+    }
 
 
-def bundle_summary_lines(bundle_map):
-    lines = []
-    for file_name in BUNDLE_FILE_ORDER:
-        item = (bundle_map or {}).get(file_name)
-        if not item:
-            continue
-        lines.append(file_name + ' -> ' + str(item.get('local_path') or ''))
-    if not lines:
-        lines.append('No files loaded yet.')
-    return lines
+def github_get_user(requests_module, token_value):
+    return requests_module.get('https://api.github.com/user', headers=github_headers(token_value), timeout=60)
 
 
-def html_card(title_text, lines, accent='#22d3ee'):
-    rendered_lines = ''.join(
-        '<div style="margin-top:8px;line-height:1.6;color:#cbd5e1;">' + html.escape(str(line)) + '</div>'
-        for line in (lines or [])
-    )
-    return (
-        '<div style="margin:10px 0;padding:18px 20px;border-radius:22px;border:1px solid rgba(255,255,255,0.12);'
-        'background:#081225;color:#fff;box-shadow:0 10px 30px rgba(0,0,0,0.15);">'
-        '<div style="font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:' + accent + ';font-weight:700;">Card</div>'
-        '<div style="font-size:24px;font-weight:800;margin-top:8px;">' + html.escape(str(title_text)) + '</div>'
-        + rendered_lines +
-        '</div>'
-    )
+def github_get_repo(requests_module, token_value, owner_value, repo_value):
+    url_value = 'https://api.github.com/repos/' + owner_value + '/' + repo_value
+    return requests_module.get(url_value, headers=github_headers(token_value), timeout=60)
 
 
-def html_code_block(text_value):
-    return (
-        '<pre style="overflow:auto;white-space:pre-wrap;word-break:break-word;background:#020617;color:#e2e8f0;'
-        'padding:18px;border-radius:20px;border:1px solid rgba(255,255,255,0.08);line-height:1.7;">'
-        + html.escape(str(text_value)) + '</pre>'
-    )
+def github_validate_token(requests_module, token_value):
+    response = github_get_user(requests_module, token_value)
+    if response.status_code != 200:
+        raise RuntimeError('GitHub token invalid or missing required scopes')
+    data = response.json()
+    login_value = str(data.get('login') or '')
+    name_value = str(data.get('name') or '')
+    return {
+        'login': login_value,
+        'name': name_value,
+        'id': str(data.get('id') or ''),
+    }
+
+
+def github_check_repo_access(requests_module, token_value, owner_value, repo_value):
+    response = github_get_repo(requests_module, token_value, owner_value, repo_value)
+    if response.status_code != 200:
+        raise RuntimeError('Repo access failed for ' + owner_value + '/' + repo_value + ' (' + str(response.status_code) + ')')
+    data = response.json()
+    perms = data.get('permissions') or {}
+    return {
+        'full_name': str(data.get('full_name') or owner_value + '/' + repo_value),
+        'private': bool(data.get('private')),
+        'default_branch': str(data.get('default_branch') or ''),
+        'can_push': bool(perms.get('push')),
+        'can_admin': bool(perms.get('admin')),
+    }
+
+
+def github_get_file(requests_module, token_value, owner_value, repo_value, branch_value, path_value):
+    url_value = 'https://api.github.com/repos/' + owner_value + '/' + repo_value + '/contents/' + path_value
+    response = requests_module.get(url_value, headers=github_headers(token_value), params={'ref': branch_value}, timeout=60)
+    return response
+
+
+def github_upsert_file(requests_module, token_value, owner_value, repo_value, branch_value, path_value, content_text, commit_message):
+    api_url = 'https://api.github.com/repos/' + owner_value + '/' + repo_value + '/contents/' + path_value
+    headers = github_headers(token_value)
+    sha_value = None
+
+    get_response = requests_module.get(api_url, headers=headers, params={'ref': branch_value}, timeout=60)
+    if get_response.status_code == 200:
+        sha_value = get_response.json().get('sha')
+    elif get_response.status_code != 404:
+        get_response.raise_for_status()
+
+    payload = {
+        'message': commit_message,
+        'content': base64.b64encode(content_text.encode('utf-8')).decode('ascii'),
+        'branch': branch_value,
+    }
+    if sha_value:
+        payload['sha'] = sha_value
+
+    put_response = requests_module.put(api_url, headers=headers, json=payload, timeout=60)
+    put_response.raise_for_status()
+    return put_response.json()
+
+
+def github_upsert_many(requests_module, token_value, owner_value, repo_value, branch_value, files_map, commit_prefix):
+    results = []
+    for path_value, content_text in files_map.items():
+        commit_message = commit_prefix + ' · ' + path_value
+        result = github_upsert_file(
+            requests_module,
+            token_value,
+            owner_value,
+            repo_value,
+            branch_value,
+            path_value,
+            content_text,
+            commit_message,
+        )
+        results.append(result)
+    return results
 
 
 def build_readme_text(owner_value, repo_value, branch_value, prefix_value):
-    launcher_path = repo_path(prefix_value, DEFAULT_LAUNCHER_PATH)
-    launcher_url = build_raw_url(owner_value, repo_value, branch_value, launcher_path)
-    return '\n'.join([
-        '# One-Tap Kaggle Controller Bundle',
+    prefix_clean = prefix_value.strip('/')
+    if prefix_clean:
+        prefix_clean = prefix_clean + '/'
+    launcher_hint = 'browser_controller_main.py and browser_controller_support.py'
+    lines = [
+        '# Browser Controller Bundle',
         '',
-        '## Fast flow',
+        'This repo stores the production Kaggle browser controller bundle.',
         '',
-        '1. Open the website.',
-        '2. Paste your GitHub key.',
-        '3. Tap **Do everything for me**.',
-        '4. The site uploads the bundle and copies `kaggle_launcher.py`.',
-        '5. Open Kaggle, paste the launcher into one cell, and run it.',
+        'Recommended launcher target files:',
         '',
-        'Repo: ' + owner_value + '/' + repo_value,
-        'Branch: ' + branch_value,
-        'Prefix: ' + (prefix_value or 'repo root'),
+        '- ' + prefix_clean + 'browser_controller_main.py',
+        '- ' + prefix_clean + 'browser_controller_support.py',
         '',
-        'Launcher raw URL:',
-        launcher_url,
+        'Repo: https://github.com/' + owner_value + '/' + repo_value + '/tree/' + branch_value,
         '',
-        'Includes:',
-        '- visible control screen',
-        '- Google quick action',
-        '- Linux helper',
-        '- Kaggle-ready launcher',
-    ])
+        'The launcher should fetch the raw Python files directly instead of parsing README code blocks.',
+        '',
+        'Files included: ' + launcher_hint,
+    ]
+    return '\n'.join(lines).rstrip() + '\n'
