@@ -2,100 +2,79 @@ import os
 import sys
 import subprocess
 
-# Paste this whole file into one Kaggle notebook cell and run it.
-# The website uploads the bundle to GitHub.
-# This launcher downloads the bundle from GitHub and opens the dashboard.
-OWNER = 'amerameryou1-blip'
-REPO = 'Wjsjsjsj'
-BRANCH = 'main'
-PREFIX = ''
-BUNDLE_FILES = [
-    'README.md',
-    'browser_controller_support.py',
-    'browser_controller_main.py',
-    'browser_controller_full.py',
-    'kaggle_launcher.py',
-]
-
 
 def pip_install(packages):
     subprocess.run([sys.executable, '-m', 'pip', 'install', '-q'] + packages, check=False)
 
 
+pip_install(['requests'])
+
+import requests
+
+OWNER = 'amerameryou1-blip'
+REPO = 'Wjsjsjsj'
+BRANCH = 'main'
+PREFIX = ''
+BACKEND_FILE = 'kaggle_ngrok_backend.py'
+
+
 def state_root():
-    if os.path.isdir('/kaggle/working'):
-        return os.path.join('/kaggle/working', 'simple_linux_controller')
-    return '/tmp/simple_linux_controller'
-
-
-def bundle_dir():
-    path_value = os.path.join(state_root(), 'bundle')
+    kaggle_root = '/kaggle/working'
+    if os.path.isdir(kaggle_root):
+        path_value = os.path.join(kaggle_root, 'browser_remote_state')
+    else:
+        path_value = '/tmp/browser_remote_state'
     os.makedirs(path_value, exist_ok=True)
     return path_value
 
 
-def repo_path(prefix_value, file_name):
-    clean_prefix = str(prefix_value or '').strip().strip('/')
-    if clean_prefix:
-        return clean_prefix + '/' + file_name
-    return file_name
+def cache_path():
+    return os.path.join(state_root(), BACKEND_FILE)
 
 
-def raw_url(owner_value, repo_value, branch_value, path_value):
-    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + str(path_value).strip('/')
+def build_raw_url(owner_value, repo_value, branch_value, path_value):
+    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + path_value
 
 
-def fetch_bundle(requests_module):
-    paths_map = {}
-    for file_name in BUNDLE_FILES:
-        remote_path = repo_path(PREFIX, file_name)
-        url_value = raw_url(OWNER, REPO, BRANCH, remote_path)
-        print('Fetching:', url_value)
-        response = requests_module.get(url_value, timeout=60)
-        response.raise_for_status()
-        text_value = response.text
-        if file_name.endswith('.py'):
-            compile(text_value, file_name, 'exec')
-        local_path = os.path.join(bundle_dir(), file_name)
-        with open(local_path, 'w', encoding='utf-8') as handle:
-            handle.write(text_value)
-        paths_map[file_name] = local_path
-    return paths_map
+def fetch_backend_text():
+    repo_path = (PREFIX.strip('/') + '/' + BACKEND_FILE).strip('/')
+    url_value = build_raw_url(OWNER, REPO, BRANCH, repo_path)
+    print('Fetching backend from:', url_value)
+    response = requests.get(url_value, timeout=90)
+    response.raise_for_status()
+    code_text = response.text
+    compile(code_text, BACKEND_FILE, 'exec')
+    with open(cache_path(), 'w', encoding='utf-8') as handle:
+        handle.write(code_text)
+    return code_text
 
 
-def run_bundle(paths_map):
-    support_path = paths_map['browser_controller_support.py']
-    main_path = paths_map['browser_controller_main.py']
+def load_cached_backend():
+    cached_file = cache_path()
+    if not os.path.exists(cached_file):
+        return None
+    with open(cached_file, 'r', encoding='utf-8') as handle:
+        code_text = handle.read()
+    compile(code_text, cached_file, 'exec')
+    print('Using cached backend:', cached_file)
+    return code_text
 
-    support_ns = {'__name__': 'browser_controller_support'}
-    with open(support_path, 'r', encoding='utf-8') as handle:
-        support_code = handle.read()
-    exec(compile(support_code, support_path, 'exec'), support_ns)
 
-    main_ns = {
-        '__name__': '__main__',
-        '__browser_support__': support_ns,
-        '__browser_bundle_paths__': paths_map,
-    }
-    with open(main_path, 'r', encoding='utf-8') as handle:
-        main_code = handle.read()
-    exec(compile(main_code, main_path, 'exec'), main_ns)
+def load_backend_with_fallback():
+    try:
+        return fetch_backend_text()
+    except Exception as exc:
+        print('Remote fetch failed:', str(exc))
+        cached = load_cached_backend()
+        if cached:
+            return cached
+        raise
 
 
 def main():
-    print('One-Tap Kaggle Controller Launcher')
-    print('Repo:', OWNER + '/' + REPO)
-    print('Branch:', BRANCH)
-    print('Prefix:', PREFIX or '(repo root)')
-    print('Installing notebook packages...')
-    pip_install(['requests', 'ipywidgets'])
-
-    import requests
-
-    print('Downloading bundle from GitHub...')
-    paths_map = fetch_bundle(requests)
-    print('Opening dashboard...')
-    run_bundle(paths_map)
+    code_text = load_backend_with_fallback()
+    namespace = {'__name__': '__main__'}
+    exec(compile(code_text, BACKEND_FILE, 'exec'), namespace)
 
 
 if __name__ == '__main__':
