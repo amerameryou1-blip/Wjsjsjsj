@@ -1,49 +1,378 @@
-# Kaggle cell 1: install browser + Selenium
-!apt-get update -y
-!apt-get install -y chromium-chromedriver
-!pip -q install selenium
-
-# Kaggle cell 2: open territorial.io
 from pathlib import Path
+import importlib.util
+import json
+import os
+
+# Repo config — these are safe, not secrets
+DEFAULT_OWNER = "amerameryou1-blip"
+DEFAULT_REPO = "Wjsjsjsj"
+DEFAULT_BRANCH = "main"
+DEFAULT_LAUNCHER = "Google"
+
+# Token is NEVER hardcoded here. It is read from Kaggle Secrets at runtime.
+# In Kaggle: Add-ons → Secrets → Add "GITHUB_TOKEN" with your PAT value.
+DEFAULT_TOKEN = ""
+
+COMMIT_MESSAGE = "Auto update Kaggle territorial.io launcher system"
+
+INSTALL_RUNTIME_CODE = """import importlib
+import shutil
+import subprocess
+import sys
+
+APT_PACKAGES = ["chromium-chromedriver"]
+PIP_PACKAGES = [
+    ("requests", "requests"),
+    ("selenium", "selenium"),
+]
+
+
+def run_command(command):
+    print("$", " ".join(command))
+    subprocess.run(command, check=True)
+
+
+def ensure_apt_packages(packages):
+    if not shutil.which("apt-get"):
+        print("apt-get not available on this runtime. Skipping apt packages.")
+        return
+    run_command(["apt-get", "update", "-y"])
+    run_command(["apt-get", "install", "-y", *packages])
+
+
+def ensure_pip_packages(packages):
+    missing = []
+    for package_name, module_name in packages:
+        try:
+            importlib.import_module(module_name)
+        except ImportError:
+            missing.append(package_name)
+
+    if missing:
+        run_command([sys.executable, "-m", "pip", "install", "-q", *missing])
+    else:
+        print("Required pip packages already installed.")
+
+
+def ensure_runtime():
+    ensure_apt_packages(APT_PACKAGES)
+    ensure_pip_packages(PIP_PACKAGES)
+
+
+if __name__ == "__main__":
+    ensure_runtime()
+"""
+BROWSER_RUNNER_CODE = """from pathlib import Path
+import shutil
 import time
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
 TARGET_URL = "https://territorial.io/"
 
-chrome_binary_candidates = [
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
-]
 
-chrome_binary = next((path for path in chrome_binary_candidates if Path(path).exists()), None)
-if chrome_binary is None:
-    raise FileNotFoundError("Could not find a Chromium/Chrome binary on this Kaggle runtime.")
+def find_chrome_binary():
+    for candidate in [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+    ]:
+        if Path(candidate).exists():
+            return candidate
+    return None
 
-options = Options()
-options.binary_location = chrome_binary
-options.add_argument("--headless=new")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-options.add_argument("--window-size=1440,900")
 
-driver = webdriver.Chrome(
-    service=Service("/usr/bin/chromedriver"),
-    options=options,
-)
+def find_chromedriver():
+    candidates = [
+        "/usr/bin/chromedriver",
+        shutil.which("chromedriver"),
+        shutil.which("chromium-chromedriver"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
 
-try:
-    driver.get(TARGET_URL)
-    time.sleep(6)
-    print("Opened:", TARGET_URL)
-    print("Page title:", driver.title)
 
-    output_dir = Path("/kaggle/working")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    screenshot_path = output_dir / "territorial_io.png"
-    driver.save_screenshot(str(screenshot_path))
-    print("Saved screenshot to:", screenshot_path)
-finally:
-    driver.quit()
+def build_options(headless_flag=None):
+    binary = find_chrome_binary()
+    if binary is None:
+        raise FileNotFoundError("Could not find Chromium/Chrome on this runtime.")
+
+    options = Options()
+    options.binary_location = binary
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1440,900")
+    if headless_flag:
+        options.add_argument(headless_flag)
+    return options
+
+
+def build_driver(headless=True):
+    driver_path = find_chromedriver()
+    if driver_path is None:
+        raise FileNotFoundError("Could not find chromedriver on this runtime.")
+
+    service = Service(driver_path)
+
+    if not headless:
+        return webdriver.Chrome(service=service, options=build_options())
+
+    last_error = None
+    for flag in ["--headless=new", "--headless"]:
+        try:
+            return webdriver.Chrome(service=service, options=build_options(flag))
+        except Exception as exc:
+            last_error = exc
+    raise last_error
+
+
+def run(url=TARGET_URL, wait_seconds=6, screenshot_name="territorial_io.png", headless=True):
+    driver = build_driver(headless=headless)
+    try:
+        driver.get(url)
+        time.sleep(wait_seconds)
+        output_dir = Path("/kaggle/working")
+        if not output_dir.exists():
+            output_dir = Path.cwd()
+        screenshot_path = output_dir / screenshot_name
+        driver.save_screenshot(str(screenshot_path))
+
+        result = {
+            "url": url,
+            "title": driver.title,
+            "screenshot": str(screenshot_path),
+        }
+        print("Opened:", result["url"])
+        print("Title:", result["title"])
+        print("Screenshot:", result["screenshot"])
+        return result
+    finally:
+        driver.quit()
+
+
+if __name__ == "__main__":
+    run()
+"""
+GITHUB_PUSH_CODE = """from pathlib import Path
+import base64
+
+import requests
+
+API_BASE = "https://api.github.com"
+API_VERSION = "2022-11-28"
+
+
+def build_headers(token):
+    return {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": API_VERSION,
+    }
+
+
+def get_existing_sha(owner, repo, repo_path, token, branch="main"):
+    url = f"{API_BASE}/repos/{owner}/{repo}/contents/{repo_path}"
+    response = requests.get(
+        url,
+        headers=build_headers(token),
+        params={"ref": branch},
+        timeout=60,
+    )
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.json().get("sha")
+
+
+def upsert_bytes(owner, repo, token, repo_path, blob_bytes, branch="main", commit_message=None):
+    url = f"{API_BASE}/repos/{owner}/{repo}/contents/{repo_path}"
+    payload = {
+        "message": commit_message or f"Update {repo_path}",
+        "content": base64.b64encode(blob_bytes).decode("utf-8"),
+        "branch": branch,
+    }
+
+    existing_sha = get_existing_sha(owner, repo, repo_path, token, branch=branch)
+    if existing_sha:
+        payload["sha"] = existing_sha
+
+    response = requests.put(url, headers=build_headers(token), json=payload, timeout=60)
+    if response.status_code not in (200, 201):
+        raise RuntimeError(f"GitHub push failed for {repo_path}: {response.status_code} {response.text}")
+
+    data = response.json()
+    html_url = data.get("content", {}).get("html_url", "")
+    print(f"[pushed] {repo_path} -> {html_url}")
+    return data
+
+
+def push_path_map(owner, repo, token, path_map, branch="main", commit_message="Update Kaggle launcher system"):
+    results = []
+    for repo_path, local_path in path_map.items():
+        local_path = Path(local_path)
+        if not local_path.exists():
+            print(f"[skip] missing {local_path}")
+            continue
+        results.append(
+            upsert_bytes(
+                owner=owner,
+                repo=repo,
+                token=token,
+                repo_path=repo_path,
+                blob_bytes=local_path.read_bytes(),
+                branch=branch,
+                commit_message=commit_message,
+            )
+        )
+    print(f"Done. Pushed {len(results)} file(s) to {owner}/{repo}@{branch}.")
+    return results
+"""
+README_KAGGLE_CODE = """# Kaggle territorial.io launcher system
+
+This repo layout is generated to replace the old notebook-magic-only raw file.
+
+## Why the old version failed
+The previous `Google` file used commands like `!apt-get update -y`.
+That syntax works in notebook cells, but it is invalid Python when you run:
+
+```python
+exec(requests.get("https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/Google").text)
+```
+
+## 409 Secret detected fix
+The token is **never** embedded in any file. The launcher reads it from
+`os.getenv("GITHUB_TOKEN")` at runtime. Set this as a Kaggle Secret
+(Add-ons → Secrets) with the name `GITHUB_TOKEN`.
+
+## Files
+- `Google` → pure Python launcher that writes helper files locally, installs runtime, opens territorial.io, saves output, and auto-updates GitHub
+- `install_runtime.py` → installs Chromium/ChromeDriver and pip packages from Python
+- `browser_runner.py` → opens https://territorial.io/ and saves a screenshot
+- `github_push.py` → pushes local files to GitHub using the Contents API
+
+## Kaggle usage
+1. Enable Internet in your notebook settings.
+2. Add a Kaggle Secret named `GITHUB_TOKEN` with your PAT value.
+3. Run the bootstrap cell to download and execute the launcher.
+4. The launcher opens territorial.io, saves output, and auto-pushes everything to GitHub.
+"""
+
+
+def write_text_file(path, content):
+    Path(path).write_text(content.rstrip() + "\n", encoding="utf-8")
+    print(f"[write] {path}")
+
+
+def load_module(module_name, file_path):
+    spec = importlib.util.spec_from_file_location(module_name, str(Path(file_path).resolve()))
+    module = importlib.util.module_from_spec(spec)
+    if spec.loader is None:
+        raise ImportError(f"Could not load {module_name} from {file_path}")
+    spec.loader.exec_module(module)
+    return module
+
+
+def create_support_files():
+    file_map = {
+        "install_runtime.py": INSTALL_RUNTIME_CODE,
+        "browser_runner.py": BROWSER_RUNNER_CODE,
+        "github_push.py": GITHUB_PUSH_CODE,
+        "README_KAGGLE.md": README_KAGGLE_CODE,
+    }
+    written = []
+    for path, content in file_map.items():
+        write_text_file(path, content)
+        written.append(path)
+    return written
+
+
+def collect_push_map(written_files, screenshot_path=None, result_json_path=None):
+    push_map = {}
+
+    launcher_path = Path(DEFAULT_LAUNCHER)
+    if launcher_path.exists():
+        push_map[DEFAULT_LAUNCHER] = str(launcher_path)
+    else:
+        print(f"[warn] {DEFAULT_LAUNCHER} not found on disk. The bootstrap cell should save it before exec.")
+
+    for path in written_files:
+        push_map[Path(path).name] = str(Path(path))
+
+    if result_json_path and Path(result_json_path).exists():
+        push_map[Path(result_json_path).name] = str(Path(result_json_path))
+
+    if screenshot_path and Path(screenshot_path).exists():
+        push_map[Path(screenshot_path).name] = str(Path(screenshot_path))
+
+    return push_map
+
+
+def get_token():
+    """Read GitHub PAT from Kaggle Secrets. NEVER hardcoded."""
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    if not token:
+        token = DEFAULT_TOKEN.strip()
+    return token
+
+
+def auto_push_files(github_push, written_files, result):
+    token = get_token()
+    if not token:
+        print("No GitHub token found.")
+        print("Fix: In Kaggle, go to Add-ons > Secrets > Add 'GITHUB_TOKEN' with your PAT.")
+        print("The launcher will auto-push once the token is available.")
+        return
+
+    owner = (os.getenv("GITHUB_OWNER") or DEFAULT_OWNER).strip() or DEFAULT_OWNER
+    repo = (os.getenv("GITHUB_REPO") or DEFAULT_REPO).strip() or DEFAULT_REPO
+    branch = (os.getenv("GITHUB_BRANCH") or DEFAULT_BRANCH).strip() or DEFAULT_BRANCH
+
+    result_json_path = Path("territorial_result.json")
+    result_json_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    print(f"[write] {result_json_path}")
+
+    push_map = collect_push_map(
+        written_files,
+        screenshot_path=result.get("screenshot", ""),
+        result_json_path=str(result_json_path),
+    )
+    if not push_map:
+        print("Nothing to push.")
+        return
+
+    print(f"Auto-updating {owner}/{repo}@{branch} with {len(push_map)} file(s)...")
+    github_push.push_path_map(
+        owner=owner,
+        repo=repo,
+        token=token,
+        branch=branch,
+        path_map=push_map,
+        commit_message=COMMIT_MESSAGE,
+    )
+
+
+def main():
+    print("Creating support files...")
+    written_files = create_support_files()
+
+    print("Loading runtime installer...")
+    install_runtime = load_module("install_runtime", "install_runtime.py")
+    install_runtime.ensure_runtime()
+
+    print("Loading browser runner and GitHub pusher...")
+    browser_runner = load_module("browser_runner", "browser_runner.py")
+    github_push = load_module("github_push", "github_push.py")
+
+    print("Opening territorial.io...")
+    result = browser_runner.run()
+    print("Run complete:", result)
+
+    auto_push_files(github_push, written_files, result)
+
+
+if __name__ == "__main__":
+    main()
