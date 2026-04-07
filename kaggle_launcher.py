@@ -1,6 +1,6 @@
 import os
 import sys
-import shutil
+import json
 import subprocess
 
 
@@ -14,7 +14,6 @@ pip_install([
     'requests',
     'ipywidgets',
     'Pillow',
-    'xvfbwrapper',
     'ipyevents',
 ])
 
@@ -25,16 +24,18 @@ REPO = 'Wjsjsjsj'
 BRANCH = 'main'
 PREFIX = ''
 BUNDLE_FILES = [
-    'browser_controller_main.py',
     'browser_controller_support.py',
+    'browser_controller_main.py',
 ]
+
 
 
 def state_root():
     kaggle_root = '/kaggle/working'
     if os.path.isdir(kaggle_root):
-        return os.path.join(kaggle_root, 'browser_controller_state')
-    return '/tmp/browser_controller_state'
+        return os.path.join(kaggle_root, 'zorin_kaggle_desktop')
+    return os.path.join('/tmp', 'zorin_kaggle_desktop')
+
 
 
 def bundle_dir():
@@ -43,100 +44,23 @@ def bundle_dir():
     return path_value
 
 
+
+def launcher_report_path():
+    os.makedirs(state_root(), exist_ok=True)
+    return os.path.join(state_root(), 'launcher-report.json')
+
+
+
 def build_raw_url(owner_value, repo_value, branch_value, path_value):
     return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + path_value
 
 
+
 def fetch_text(url_value):
-    response = requests.get(url_value, timeout=60)
+    response = requests.get(url_value, timeout=90)
     response.raise_for_status()
     return response.text
 
-
-def ensure_system_tools():
-    os.environ['DEBIAN_FRONTEND'] = 'noninteractive'
-    os.environ['DISPLAY'] = ':99'
-    os.environ['XDG_RUNTIME_DIR'] = os.path.join(state_root(), 'runtime')
-    os.makedirs(os.environ['XDG_RUNTIME_DIR'], exist_ok=True)
-    os.makedirs(os.path.join(state_root(), 'downloads'), exist_ok=True)
-    os.makedirs(os.path.join(state_root(), 'chrome-profile'), exist_ok=True)
-    os.makedirs(os.path.join(state_root(), 'logs'), exist_ok=True)
-    os.makedirs(os.path.join(state_root(), 'captures'), exist_ok=True)
-
-    core_packages = [
-        'xvfb',
-        'xdotool',
-        'scrot',
-        'imagemagick',
-        'wget',
-        'curl',
-        'ca-certificates',
-        'fonts-liberation',
-        'libatk1.0-0',
-        'libatk-bridge2.0-0',
-        'libatspi2.0-0',
-        'libvulkan1',
-        'libxcomposite1',
-        'libxdamage1',
-        'libxrandr2',
-        'libgbm1',
-        'libasound2',
-        'libpangocairo-1.0-0',
-        'libpango-1.0-0',
-        'libgtk-3-0',
-        'libnss3',
-        'libxshmfence1',
-        'xdg-utils',
-        'xclip',
-        'xsel',
-        'x11-utils',
-        'x11-apps',
-        'unzip',
-        'p7zip-full',
-        'file',
-        'procps',
-    ]
-    optional_packages = [
-        'openbox',
-        'fluxbox',
-        'pcmanfm',
-        'xterm',
-    ]
-
-    required_tools = ['Xvfb', 'xdotool', 'scrot', 'xclip']
-    need_install = any(shutil.which(tool_name) is None for tool_name in required_tools)
-
-    browser_found = False
-    for browser_name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
-        if shutil.which(browser_name) is not None:
-            browser_found = True
-            break
-
-    if not browser_found:
-        need_install = True
-
-    if need_install:
-        subprocess.run('apt-get update -y', shell=True, check=False)
-        subprocess.run('apt-get install -y ' + ' '.join(core_packages), shell=True, check=False)
-        subprocess.run('apt-get install -y ' + ' '.join(optional_packages) + ' || true', shell=True, check=False)
-
-        browser_found = False
-        for browser_name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
-            if shutil.which(browser_name) is not None:
-                browser_found = True
-                break
-
-        if not browser_found:
-            subprocess.run(
-                'wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb',
-                shell=True,
-                check=False,
-            )
-            subprocess.run('apt-get install -y /tmp/chrome.deb || true', shell=True, check=False)
-            subprocess.run('apt-get -f install -y || true', shell=True, check=False)
-            subprocess.run('apt-get install -y /tmp/chrome.deb || true', shell=True, check=False)
-            if shutil.which('google-chrome') is None and shutil.which('google-chrome-stable') is None:
-                subprocess.run('apt-get install -y chromium-browser || apt-get install -y chromium || true', shell=True, check=False)
 
 
 def fetch_bundle():
@@ -154,6 +78,7 @@ def fetch_bundle():
     return cached_paths
 
 
+
 def load_cached_bundle():
     cached_paths = {}
     for file_name in BUNDLE_FILES:
@@ -164,11 +89,12 @@ def load_cached_bundle():
     return cached_paths
 
 
+
 def load_bundle_with_fallback():
     try:
         return fetch_bundle()
     except Exception as exc:
-        print('Fetch failed:', str(exc))
+        print('Bundle fetch failed:', str(exc))
         cached = load_cached_bundle()
         if cached:
             print('Using cached bundle from previous run.')
@@ -176,14 +102,18 @@ def load_bundle_with_fallback():
         raise
 
 
-def execute_bundle(paths_map):
-    support_path = paths_map['browser_controller_support.py']
-    main_path = paths_map['browser_controller_main.py']
 
+def execute_support(paths_map):
+    support_path = paths_map['browser_controller_support.py']
     support_ns = {'__name__': 'browser_controller_support'}
     support_code = open(support_path, 'r', encoding='utf-8').read()
     exec(compile(support_code, support_path, 'exec'), support_ns)
+    return support_ns
 
+
+
+def execute_main(paths_map, support_ns):
+    main_path = paths_map['browser_controller_main.py']
     main_ns = {
         '__name__': '__main__',
         '__browser_support__': support_ns,
@@ -193,10 +123,21 @@ def execute_bundle(paths_map):
     exec(compile(main_code, main_path, 'exec'), main_ns)
 
 
+
 def main():
-    ensure_system_tools()
     paths_map = load_bundle_with_fallback()
-    execute_bundle(paths_map)
+    support_ns = execute_support(paths_map)
+    install_report = support_ns['install_or_repair_stack'](include_browser=True)
+    report = {
+        'timestamp': support_ns['now_text'](),
+        'state_root': support_ns['detect_state_root']() if 'detect_state_root' in support_ns else state_root(),
+        'bundle_paths': paths_map,
+        'browser_found': install_report.get('browser_found', ''),
+        'persistent': install_report.get('persistent', False),
+    }
+    with open(launcher_report_path(), 'w', encoding='utf-8') as handle:
+        handle.write(json.dumps(report, indent=2, ensure_ascii=False))
+    execute_main(paths_map, support_ns)
 
 
 if __name__ == '__main__':
