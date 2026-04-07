@@ -9,11 +9,11 @@ DEFAULT_OWNER = 'amerameryou1-blip'
 DEFAULT_REPO = 'Wjsjsjsj'
 DEFAULT_BRANCH = 'main'
 DEFAULT_PREFIX = ''
-DEFAULT_MAIN_PATH = 'browser_controller_main.py'
+DEFAULT_README_PATH = 'README.md'
 DEFAULT_SUPPORT_PATH = 'browser_controller_support.py'
+DEFAULT_MAIN_PATH = 'browser_controller_main.py'
 DEFAULT_FULL_PATH = 'browser_controller_full.py'
 DEFAULT_LAUNCHER_PATH = 'kaggle_launcher.py'
-DEFAULT_README_PATH = 'README.md'
 BUNDLE_FILE_ORDER = [
     DEFAULT_README_PATH,
     DEFAULT_SUPPORT_PATH,
@@ -21,12 +21,9 @@ BUNDLE_FILE_ORDER = [
     DEFAULT_FULL_PATH,
     DEFAULT_LAUNCHER_PATH,
 ]
-PRIMARY_EXECUTION_FILES = [
-    DEFAULT_SUPPORT_PATH,
-    DEFAULT_MAIN_PATH,
-]
-ANTIGRAVITY_DOWNLOAD_URL = 'https://antigravity.google/download/linux'
+GOOGLE_HOME_URL = 'https://www.google.com/'
 ANTIGRAVITY_HOME_URL = 'https://antigravity.google/download'
+ANTIGRAVITY_DOWNLOAD_URL = 'https://antigravity.google/download/linux'
 ANTIGRAVITY_DEB_COMMANDS = '\n'.join([
     'sudo mkdir -p /etc/apt/keyrings',
     'curl -fsSL https://us-central1-apt.pkg.dev/doc/repo-signing-key.gpg | sudo gpg --dearmor --yes -o /etc/apt/keyrings/antigravity-repo-key.gpg',
@@ -54,26 +51,23 @@ def now_text():
 
 
 def detect_state_root():
-    kaggle_root = '/kaggle/working'
-    if os.path.isdir(kaggle_root):
-        return os.path.join(kaggle_root, 'kaggle_bundle_state')
-    return '/tmp/kaggle_bundle_state'
+    if os.path.isdir('/kaggle/working'):
+        return os.path.join('/kaggle/working', 'simple_linux_controller')
+    return '/tmp/simple_linux_controller'
 
 
 def ensure_state_dirs():
     root = detect_state_root()
-    bundle_dir = os.path.join(root, 'bundle-cache')
+    bundle_dir = os.path.join(root, 'bundle')
     logs_dir = os.path.join(root, 'logs')
-    temp_dir = os.path.join(root, 'temp')
-    config_path = os.path.join(root, 'dashboard_config.json')
-    for path_value in [root, bundle_dir, logs_dir, temp_dir]:
-        os.makedirs(path_value, exist_ok=True)
+    os.makedirs(bundle_dir, exist_ok=True)
+    os.makedirs(logs_dir, exist_ok=True)
     return {
         'root': root,
         'bundle_dir': bundle_dir,
         'logs_dir': logs_dir,
-        'temp_dir': temp_dir,
-        'config_path': config_path,
+        'config_path': os.path.join(root, 'dashboard_config.json'),
+        'log_path': os.path.join(logs_dir, 'dashboard.log'),
         'is_kaggle': os.path.isdir('/kaggle/working'),
     }
 
@@ -100,21 +94,19 @@ def load_json(path_value, default_value):
 
 
 def save_json(path_value, data_value):
-    temp_path = path_value + '.tmp'
-    with open(temp_path, 'w', encoding='utf-8') as handle:
-        json.dump(data_value, handle, indent=2, ensure_ascii=False)
-    os.replace(temp_path, path_value)
+    file_write_text(path_value, json.dumps(data_value, indent=2, ensure_ascii=False))
 
 
 def repo_path(prefix_value, file_name):
-    prefix_clean = prefix_value.strip('/')
-    if prefix_clean:
-        return prefix_clean + '/' + file_name
+    clean_prefix = str(prefix_value or '').strip().strip('/')
+    if clean_prefix:
+        return clean_prefix + '/' + file_name
     return file_name
 
 
 def build_raw_url(owner_value, repo_value, branch_value, path_value):
-    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + path_value.strip('/')
+    clean_path = str(path_value or '').strip('/').strip()
+    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + clean_path
 
 
 def fetch_text(requests_module, url_value, timeout=60):
@@ -165,7 +157,7 @@ def load_bundle_from_directory(base_dir, file_names):
 def merge_bundle_maps(*bundle_maps):
     merged = {}
     for bundle_map in bundle_maps:
-        for key, value in bundle_map.items():
+        for key, value in (bundle_map or {}).items():
             merged[key] = value
     return merged
 
@@ -173,17 +165,19 @@ def merge_bundle_maps(*bundle_maps):
 def bundle_summary_lines(bundle_map):
     lines = []
     for file_name in BUNDLE_FILE_ORDER:
-        item = bundle_map.get(file_name)
+        item = (bundle_map or {}).get(file_name)
         if not item:
             continue
-        lines.append(file_name + ' → ' + item.get('local_path', ''))
+        lines.append(file_name + ' -> ' + str(item.get('local_path') or ''))
+    if not lines:
+        lines.append('No files loaded yet.')
     return lines
 
 
 def github_headers(token_value):
     return {
         'Accept': 'application/vnd.github+json',
-        'Authorization': 'Bearer ' + token_value.strip(),
+        'Authorization': 'Bearer ' + str(token_value).strip(),
         'X-GitHub-Api-Version': '2022-11-28',
     }
 
@@ -191,7 +185,7 @@ def github_headers(token_value):
 def github_validate_token(requests_module, token_value):
     response = requests_module.get('https://api.github.com/user', headers=github_headers(token_value), timeout=60)
     if response.status_code != 200:
-        raise RuntimeError('GitHub token invalid or missing repo access')
+        raise RuntimeError('GitHub token is invalid or missing permissions.')
     data = response.json()
     return {
         'login': str(data.get('login') or ''),
@@ -200,24 +194,22 @@ def github_validate_token(requests_module, token_value):
     }
 
 
-def github_check_repo_access(requests_module, token_value, owner_value, repo_value):
+def github_repo_info(requests_module, token_value, owner_value, repo_value):
     url_value = 'https://api.github.com/repos/' + owner_value + '/' + repo_value
     response = requests_module.get(url_value, headers=github_headers(token_value), timeout=60)
     if response.status_code != 200:
         raise RuntimeError('Cannot access repository ' + owner_value + '/' + repo_value)
     data = response.json()
     permissions = data.get('permissions') or {}
-    can_push = bool(permissions.get('push') or permissions.get('admin') or permissions.get('maintain'))
     return {
-        'full_name': str(data.get('full_name') or (owner_value + '/' + repo_value)),
+        'full_name': str(data.get('full_name') or owner_value + '/' + repo_value),
         'default_branch': str(data.get('default_branch') or ''),
-        'private': bool(data.get('private')),
-        'can_push': can_push,
+        'can_push': bool(permissions.get('push') or permissions.get('admin') or permissions.get('maintain')),
     }
 
 
 def github_existing_sha(requests_module, token_value, owner_value, repo_value, branch_value, path_value):
-    encoded_path = quote(path_value.strip('/'), safe='/')
+    encoded_path = quote(str(path_value).strip('/'), safe='/')
     url_value = 'https://api.github.com/repos/' + owner_value + '/' + repo_value + '/contents/' + encoded_path
     response = requests_module.get(
         url_value,
@@ -228,17 +220,16 @@ def github_existing_sha(requests_module, token_value, owner_value, repo_value, b
     if response.status_code == 404:
         return None
     response.raise_for_status()
-    data = response.json()
-    return data.get('sha')
+    return (response.json() or {}).get('sha')
 
 
-def github_upsert_file(requests_module, token_value, owner_value, repo_value, branch_value, path_value, content_text, commit_message):
-    encoded_path = quote(path_value.strip('/'), safe='/')
+def github_upload_file(requests_module, token_value, owner_value, repo_value, branch_value, path_value, content_text, commit_message):
+    encoded_path = quote(str(path_value).strip('/'), safe='/')
     url_value = 'https://api.github.com/repos/' + owner_value + '/' + repo_value + '/contents/' + encoded_path
     sha_value = github_existing_sha(requests_module, token_value, owner_value, repo_value, branch_value, path_value)
     payload = {
         'message': commit_message,
-        'content': base64.b64encode(content_text.encode('utf-8')).decode('ascii'),
+        'content': base64.b64encode(str(content_text).encode('utf-8')).decode('ascii'),
         'branch': branch_value,
     }
     if sha_value:
@@ -248,85 +239,88 @@ def github_upsert_file(requests_module, token_value, owner_value, repo_value, br
     return response.json()
 
 
-def github_upsert_many(requests_module, token_value, owner_value, repo_value, branch_value, files_map, commit_prefix):
+def github_upload_bundle(requests_module, token_value, owner_value, repo_value, branch_value, prefix_value, bundle_map, commit_prefix):
     results = []
-    for path_value, content_text in files_map.items():
-        result = github_upsert_file(
+    for file_name in BUNDLE_FILE_ORDER:
+        item = (bundle_map or {}).get(file_name)
+        if not item:
+            continue
+        target_path = repo_path(prefix_value, file_name)
+        result = github_upload_file(
             requests_module,
             token_value,
             owner_value,
             repo_value,
             branch_value,
-            path_value,
-            content_text,
-            commit_prefix + ' · ' + path_value,
+            target_path,
+            item.get('content') or '',
+            (commit_prefix or 'Upload bundle') + ' · ' + target_path,
         )
-        results.append(result)
+        results.append({
+            'file_name': file_name,
+            'repo_path': target_path,
+            'result': result,
+        })
     return results
 
 
-def html_card(title_text, body_lines, accent='#7c3aed'):
-    parts = []
-    parts.append('<div style="font-family:system-ui,Segoe UI,Arial,sans-serif;background:#0f172a;border:1px solid #1e293b;border-left:4px solid ' + accent + ';border-radius:14px;padding:16px 18px;margin:10px 0;">')
-    parts.append('<div style="font-size:15px;font-weight:700;color:#f8fafc;margin-bottom:10px;">' + html.escape(title_text) + '</div>')
-    for line in body_lines:
-        parts.append('<div style="font-size:13px;line-height:1.6;color:#cbd5e1;margin:3px 0;">' + html.escape(line) + '</div>')
-    parts.append('</div>')
-    return ''.join(parts)
+def html_card(title_text, lines, accent='#38bdf8'):
+    safe_lines = ''.join('<li style="margin:6px 0;">' + html.escape(str(line)) + '</li>' for line in lines)
+    return (
+        '<div style="border:1px solid ' + accent + ';border-radius:16px;padding:16px;background:#0f172a;color:#e2e8f0;">'
+        '<div style="font-size:18px;font-weight:700;margin-bottom:8px;">' + html.escape(str(title_text)) + '</div>'
+        '<ul style="margin:0;padding-left:18px;">' + safe_lines + '</ul>'
+        '</div>'
+    )
 
 
-def html_code_block(title_text, code_text):
-    return ''.join([
-        '<div style="font-family:system-ui,Segoe UI,Arial,sans-serif;background:#020617;border:1px solid #1e293b;border-radius:14px;padding:16px 18px;margin:10px 0;">',
-        '<div style="font-size:14px;font-weight:700;color:#f8fafc;margin-bottom:10px;">' + html.escape(title_text) + '</div>',
-        '<pre style="margin:0;white-space:pre-wrap;word-break:break-word;color:#93c5fd;font-size:12px;line-height:1.65;">' + html.escape(code_text) + '</pre>',
-        '</div>',
-    ])
+def html_code_block(text_value):
+    return (
+        '<pre style="white-space:pre-wrap;background:#020617;color:#dbeafe;border:1px solid #334155;'
+        'padding:16px;border-radius:14px;overflow:auto;">'
+        + html.escape(str(text_value))
+        + '</pre>'
+    )
 
 
 def build_readme_text(owner_value, repo_value, branch_value, prefix_value):
-    prefix_clean = prefix_value.strip('/')
-    if prefix_clean:
-        prefix_clean = prefix_clean + '/'
-    raw_base = 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/'
-    tree_url = 'https://github.com/' + owner_value + '/' + repo_value + '/tree/' + branch_value
+    prefix_label = prefix_value.strip('/') or 'repo root'
     lines = [
-        '# Kaggle Bundle Uploader',
+        '# Simple Linux Controller Bundle',
         '',
-        'This repository stores a Kaggle-ready bundle that can be uploaded from the website and launched from a Kaggle notebook.',
+        'This repo stores a simple Kaggle-ready bundle and launcher.',
         '',
-        '## Quick flow',
-        '1. Open the website and paste a GitHub token with repo write access.',
-        '2. Upload the bundle files to this repository.',
-        '3. Copy `kaggle_launcher.py` into a Kaggle notebook cell and run it.',
+        '## Simple steps',
         '',
-        '## Repository target',
-        '- Owner: ' + owner_value,
-        '- Repo: ' + repo_value,
-        '- Branch: ' + branch_value,
-        '- Prefix: ' + (prefix_clean or '(repo root)'),
+        '1. Open the website.',
+        '2. Paste your GitHub token in the upload box.',
+        '3. Click **Upload bundle to GitHub**.',
+        '4. Copy `kaggle_launcher.py` from the website.',
+        '5. Paste it into one Kaggle notebook cell.',
+        '6. Run the cell.',
         '',
-        '## Files',
-        '- `' + prefix_clean + 'README.md`',
-        '- `' + prefix_clean + 'browser_controller_support.py`',
-        '- `' + prefix_clean + 'browser_controller_main.py`',
-        '- `' + prefix_clean + 'browser_controller_full.py`',
-        '- `' + prefix_clean + 'kaggle_launcher.py`',
+        '## Repo settings',
         '',
-        '## Raw URLs',
-        '- README: ' + raw_base + prefix_clean + 'README.md',
-        '- Support: ' + raw_base + prefix_clean + 'browser_controller_support.py',
-        '- Main: ' + raw_base + prefix_clean + 'browser_controller_main.py',
-        '- Full: ' + raw_base + prefix_clean + 'browser_controller_full.py',
-        '- Launcher: ' + raw_base + prefix_clean + 'kaggle_launcher.py',
+        '- Owner: `' + owner_value + '`',
+        '- Repo: `' + repo_value + '`',
+        '- Branch: `' + branch_value + '`',
+        '- Prefix: `' + prefix_label + '`',
         '',
-        '## GitHub tree',
-        tree_url,
+        '## Bundle files',
         '',
-        '## Antigravity Linux install',
-        'Debian/Ubuntu and RPM commands are included in the website and Kaggle dashboard.',
+        '- README.md',
+        '- browser_controller_support.py',
+        '- browser_controller_main.py',
+        '- browser_controller_full.py',
+        '- kaggle_launcher.py',
         '',
-        'Generated on: ' + now_text(),
+        '## Linux install',
         '',
+        'The dashboard includes Antigravity Linux commands for deb-based and rpm-based distributions.',
+        '',
+        '## Quick links',
+        '',
+        '- Google: ' + GOOGLE_HOME_URL,
+        '- Antigravity: ' + ANTIGRAVITY_DOWNLOAD_URL,
     ]
-    return '\n'.join(lines)
+    return '\n'.join(lines) + '\n'
