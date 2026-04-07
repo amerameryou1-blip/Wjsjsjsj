@@ -1,0 +1,49 @@
+# Kaggle cell 1: install browser + Selenium
+!apt-get update -y
+!apt-get install -y chromium-chromedriver
+!pip -q install selenium
+
+# Kaggle cell 2: open territorial.io
+from pathlib import Path
+import time
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+
+TARGET_URL = "https://territorial.io/"
+
+chrome_binary_candidates = [
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+]
+
+chrome_binary = next((path for path in chrome_binary_candidates if Path(path).exists()), None)
+if chrome_binary is None:
+    raise FileNotFoundError("Could not find a Chromium/Chrome binary on this Kaggle runtime.")
+
+options = Options()
+options.binary_location = chrome_binary
+options.add_argument("--headless=new")
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
+options.add_argument("--window-size=1440,900")
+
+driver = webdriver.Chrome(
+    service=Service("/usr/bin/chromedriver"),
+    options=options,
+)
+
+try:
+    driver.get(TARGET_URL)
+    time.sleep(6)
+    print("Opened:", TARGET_URL)
+    print("Page title:", driver.title)
+
+    output_dir = Path("/kaggle/working")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    screenshot_path = output_dir / "territorial_io.png"
+    driver.save_screenshot(str(screenshot_path))
+    print("Saved screenshot to:", screenshot_path)
+finally:
+    driver.quit()
