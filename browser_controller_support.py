@@ -2,8 +2,6 @@ import os
 import json
 import html
 import time
-import base64
-from urllib.parse import quote
 
 DEFAULT_OWNER = 'amerameryou1-blip'
 DEFAULT_REPO = 'Wjsjsjsj'
@@ -22,7 +20,6 @@ BUNDLE_FILE_ORDER = [
     DEFAULT_LAUNCHER_PATH,
 ]
 GOOGLE_HOME_URL = 'https://www.google.com/'
-ANTIGRAVITY_HOME_URL = 'https://antigravity.google/download'
 ANTIGRAVITY_DOWNLOAD_URL = 'https://antigravity.google/download/linux'
 ANTIGRAVITY_DEB_COMMANDS = '\n'.join([
     'sudo mkdir -p /etc/apt/keyrings',
@@ -50,25 +47,20 @@ def now_text():
     return time.strftime('%Y-%m-%d %H:%M:%S')
 
 
-def detect_state_root():
+def state_root():
     if os.path.isdir('/kaggle/working'):
         return os.path.join('/kaggle/working', 'simple_linux_controller')
     return '/tmp/simple_linux_controller'
 
 
 def ensure_state_dirs():
-    root = detect_state_root()
+    root = state_root()
     bundle_dir = os.path.join(root, 'bundle')
-    logs_dir = os.path.join(root, 'logs')
     os.makedirs(bundle_dir, exist_ok=True)
-    os.makedirs(logs_dir, exist_ok=True)
     return {
         'root': root,
         'bundle_dir': bundle_dir,
-        'logs_dir': logs_dir,
-        'config_path': os.path.join(root, 'dashboard_config.json'),
-        'log_path': os.path.join(logs_dir, 'dashboard.log'),
-        'is_kaggle': os.path.isdir('/kaggle/working'),
+        'config_path': os.path.join(root, 'controller_config.json'),
     }
 
 
@@ -105,8 +97,7 @@ def repo_path(prefix_value, file_name):
 
 
 def build_raw_url(owner_value, repo_value, branch_value, path_value):
-    clean_path = str(path_value or '').strip('/').strip()
-    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + clean_path
+    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + str(path_value).strip('/')
 
 
 def fetch_text(requests_module, url_value, timeout=60):
@@ -174,153 +165,53 @@ def bundle_summary_lines(bundle_map):
     return lines
 
 
-def github_headers(token_value):
-    return {
-        'Accept': 'application/vnd.github+json',
-        'Authorization': 'Bearer ' + str(token_value).strip(),
-        'X-GitHub-Api-Version': '2022-11-28',
-    }
-
-
-def github_validate_token(requests_module, token_value):
-    response = requests_module.get('https://api.github.com/user', headers=github_headers(token_value), timeout=60)
-    if response.status_code != 200:
-        raise RuntimeError('GitHub token is invalid or missing permissions.')
-    data = response.json()
-    return {
-        'login': str(data.get('login') or ''),
-        'name': str(data.get('name') or ''),
-        'id': str(data.get('id') or ''),
-    }
-
-
-def github_repo_info(requests_module, token_value, owner_value, repo_value):
-    url_value = 'https://api.github.com/repos/' + owner_value + '/' + repo_value
-    response = requests_module.get(url_value, headers=github_headers(token_value), timeout=60)
-    if response.status_code != 200:
-        raise RuntimeError('Cannot access repository ' + owner_value + '/' + repo_value)
-    data = response.json()
-    permissions = data.get('permissions') or {}
-    return {
-        'full_name': str(data.get('full_name') or owner_value + '/' + repo_value),
-        'default_branch': str(data.get('default_branch') or ''),
-        'can_push': bool(permissions.get('push') or permissions.get('admin') or permissions.get('maintain')),
-    }
-
-
-def github_existing_sha(requests_module, token_value, owner_value, repo_value, branch_value, path_value):
-    encoded_path = quote(str(path_value).strip('/'), safe='/')
-    url_value = 'https://api.github.com/repos/' + owner_value + '/' + repo_value + '/contents/' + encoded_path
-    response = requests_module.get(
-        url_value,
-        headers=github_headers(token_value),
-        params={'ref': branch_value},
-        timeout=60,
+def html_card(title_text, lines, accent='#22d3ee'):
+    rendered_lines = ''.join(
+        '<div style="margin-top:8px;line-height:1.6;color:#cbd5e1;">' + html.escape(str(line)) + '</div>'
+        for line in (lines or [])
     )
-    if response.status_code == 404:
-        return None
-    response.raise_for_status()
-    return (response.json() or {}).get('sha')
-
-
-def github_upload_file(requests_module, token_value, owner_value, repo_value, branch_value, path_value, content_text, commit_message):
-    encoded_path = quote(str(path_value).strip('/'), safe='/')
-    url_value = 'https://api.github.com/repos/' + owner_value + '/' + repo_value + '/contents/' + encoded_path
-    sha_value = github_existing_sha(requests_module, token_value, owner_value, repo_value, branch_value, path_value)
-    payload = {
-        'message': commit_message,
-        'content': base64.b64encode(str(content_text).encode('utf-8')).decode('ascii'),
-        'branch': branch_value,
-    }
-    if sha_value:
-        payload['sha'] = sha_value
-    response = requests_module.put(url_value, headers=github_headers(token_value), json=payload, timeout=60)
-    response.raise_for_status()
-    return response.json()
-
-
-def github_upload_bundle(requests_module, token_value, owner_value, repo_value, branch_value, prefix_value, bundle_map, commit_prefix):
-    results = []
-    for file_name in BUNDLE_FILE_ORDER:
-        item = (bundle_map or {}).get(file_name)
-        if not item:
-            continue
-        target_path = repo_path(prefix_value, file_name)
-        result = github_upload_file(
-            requests_module,
-            token_value,
-            owner_value,
-            repo_value,
-            branch_value,
-            target_path,
-            item.get('content') or '',
-            (commit_prefix or 'Upload bundle') + ' · ' + target_path,
-        )
-        results.append({
-            'file_name': file_name,
-            'repo_path': target_path,
-            'result': result,
-        })
-    return results
-
-
-def html_card(title_text, lines, accent='#38bdf8'):
-    safe_lines = ''.join('<li style="margin:6px 0;">' + html.escape(str(line)) + '</li>' for line in lines)
     return (
-        '<div style="border:1px solid ' + accent + ';border-radius:16px;padding:16px;background:#0f172a;color:#e2e8f0;">'
-        '<div style="font-size:18px;font-weight:700;margin-bottom:8px;">' + html.escape(str(title_text)) + '</div>'
-        '<ul style="margin:0;padding-left:18px;">' + safe_lines + '</ul>'
+        '<div style="margin:10px 0;padding:18px 20px;border-radius:22px;border:1px solid rgba(255,255,255,0.12);'
+        'background:#081225;color:#fff;box-shadow:0 10px 30px rgba(0,0,0,0.15);">'
+        '<div style="font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:' + accent + ';font-weight:700;">Card</div>'
+        '<div style="font-size:24px;font-weight:800;margin-top:8px;">' + html.escape(str(title_text)) + '</div>'
+        + rendered_lines +
         '</div>'
     )
 
 
 def html_code_block(text_value):
     return (
-        '<pre style="white-space:pre-wrap;background:#020617;color:#dbeafe;border:1px solid #334155;'
-        'padding:16px;border-radius:14px;overflow:auto;">'
-        + html.escape(str(text_value))
-        + '</pre>'
+        '<pre style="overflow:auto;white-space:pre-wrap;word-break:break-word;background:#020617;color:#e2e8f0;'
+        'padding:18px;border-radius:20px;border:1px solid rgba(255,255,255,0.08);line-height:1.7;">'
+        + html.escape(str(text_value)) + '</pre>'
     )
 
 
 def build_readme_text(owner_value, repo_value, branch_value, prefix_value):
-    prefix_label = prefix_value.strip('/') or 'repo root'
-    lines = [
-        '# Simple Linux Controller Bundle',
+    launcher_path = repo_path(prefix_value, DEFAULT_LAUNCHER_PATH)
+    launcher_url = build_raw_url(owner_value, repo_value, branch_value, launcher_path)
+    return '\n'.join([
+        '# One-Tap Kaggle Controller Bundle',
         '',
-        'This repo stores a simple Kaggle-ready bundle and launcher.',
-        '',
-        '## Simple steps',
+        '## Fast flow',
         '',
         '1. Open the website.',
-        '2. Paste your GitHub token in the upload box.',
-        '3. Click **Upload bundle to GitHub**.',
-        '4. Copy `kaggle_launcher.py` from the website.',
-        '5. Paste it into one Kaggle notebook cell.',
-        '6. Run the cell.',
+        '2. Paste your GitHub key.',
+        '3. Tap **Do everything for me**.',
+        '4. The site uploads the bundle and copies `kaggle_launcher.py`.',
+        '5. Open Kaggle, paste the launcher into one cell, and run it.',
         '',
-        '## Repo settings',
+        'Repo: ' + owner_value + '/' + repo_value,
+        'Branch: ' + branch_value,
+        'Prefix: ' + (prefix_value or 'repo root'),
         '',
-        '- Owner: `' + owner_value + '`',
-        '- Repo: `' + repo_value + '`',
-        '- Branch: `' + branch_value + '`',
-        '- Prefix: `' + prefix_label + '`',
+        'Launcher raw URL:',
+        launcher_url,
         '',
-        '## Bundle files',
-        '',
-        '- README.md',
-        '- browser_controller_support.py',
-        '- browser_controller_main.py',
-        '- browser_controller_full.py',
-        '- kaggle_launcher.py',
-        '',
-        '## Linux install',
-        '',
-        'The dashboard includes Antigravity Linux commands for deb-based and rpm-based distributions.',
-        '',
-        '## Quick links',
-        '',
-        '- Google: ' + GOOGLE_HOME_URL,
-        '- Antigravity: ' + ANTIGRAVITY_DOWNLOAD_URL,
-    ]
-    return '\n'.join(lines) + '\n'
+        'Includes:',
+        '- visible control screen',
+        '- Google quick action',
+        '- Linux helper',
+        '- Kaggle-ready launcher',
+    ])
