@@ -1,7 +1,5 @@
 import os
 import sys
-import json
-import shutil
 import subprocess
 
 
@@ -9,25 +7,29 @@ def pip_install(packages):
     subprocess.run([sys.executable, '-m', 'pip', 'install', '-q'] + packages, check=False)
 
 
-pip_install(['requests', 'ipywidgets', 'Pillow', 'xvfbwrapper', 'ipyevents'])
+pip_install(['requests', 'ipywidgets'])
 
 import requests
 
+# Replace these values only if your GitHub repository is different.
 OWNER = 'amerameryou1-blip'
 REPO = 'Wjsjsjsj'
 BRANCH = 'main'
 PREFIX = ''
 BUNDLE_FILES = [
-    'browser_controller_main.py',
+    'README.md',
     'browser_controller_support.py',
+    'browser_controller_main.py',
+    'browser_controller_full.py',
+    'kaggle_launcher.py',
 ]
 
 
 def state_root():
     kaggle_root = '/kaggle/working'
     if os.path.isdir(kaggle_root):
-        return os.path.join(kaggle_root, 'browser_controller_state')
-    return '/tmp/browser_controller_state'
+        return os.path.join(kaggle_root, 'kaggle_bundle_state')
+    return '/tmp/kaggle_bundle_state'
 
 
 def bundle_dir():
@@ -37,7 +39,15 @@ def bundle_dir():
 
 
 def build_raw_url(owner_value, repo_value, branch_value, path_value):
-    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + path_value
+    clean_path = path_value.strip('/')
+    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + clean_path
+
+
+def repo_path(prefix_value, file_name):
+    prefix_clean = prefix_value.strip('/')
+    if prefix_clean:
+        return prefix_clean + '/' + file_name
+    return file_name
 
 
 def fetch_text(url_value):
@@ -46,62 +56,16 @@ def fetch_text(url_value):
     return response.text
 
 
-def ensure_system_tools():
-    os.environ['DEBIAN_FRONTEND'] = 'noninteractive'
-    os.environ['DISPLAY'] = ':99'
-    os.environ['XDG_RUNTIME_DIR'] = os.path.join(state_root(), 'runtime')
-    os.makedirs(os.environ['XDG_RUNTIME_DIR'], exist_ok=True)
-    os.makedirs(os.path.join(state_root(), 'downloads'), exist_ok=True)
-    os.makedirs(os.path.join(state_root(), 'chrome-profile'), exist_ok=True)
-
-    packages = [
-        'xvfb', 'xdotool', 'scrot', 'imagemagick', 'wget', 'curl', 'ca-certificates', 'fonts-liberation',
-        'libatk1.0-0', 'libatk-bridge2.0-0', 'libatspi2.0-0', 'libvulkan1', 'libxcomposite1',
-        'libxdamage1', 'libxrandr2', 'libgbm1', 'libasound2', 'libpangocairo-1.0-0',
-        'libpango-1.0-0', 'libgtk-3-0', 'libnss3', 'libxshmfence1', 'xdg-utils'
-    ]
-
-    need_install = False
-    for tool_name in ['Xvfb', 'xdotool', 'scrot']:
-        if shutil.which(tool_name) is None:
-            need_install = True
-            break
-
-    browser_found = False
-    for browser_name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
-        if shutil.which(browser_name) is not None:
-            browser_found = True
-            break
-
-    if not browser_found:
-        need_install = True
-
-    if need_install:
-        subprocess.run('apt-get update -y', shell=True, check=False)
-        subprocess.run('apt-get install -y ' + ' '.join(packages), shell=True, check=False)
-        browser_found = False
-        for browser_name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
-            if shutil.which(browser_name) is not None:
-                browser_found = True
-                break
-        if not browser_found:
-            subprocess.run('wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb', shell=True, check=False)
-            subprocess.run('apt-get install -y /tmp/chrome.deb || true', shell=True, check=False)
-            subprocess.run('apt-get -f install -y || true', shell=True, check=False)
-            subprocess.run('apt-get install -y /tmp/chrome.deb || true', shell=True, check=False)
-            if shutil.which('google-chrome') is None and shutil.which('google-chrome-stable') is None:
-                subprocess.run('apt-get install -y chromium-browser || apt-get install -y chromium || true', shell=True, check=False)
-
-
 def fetch_bundle():
     cached_paths = {}
     for file_name in BUNDLE_FILES:
-        repo_path = (PREFIX.strip('/') + '/' + file_name).strip('/')
+        remote_path = repo_path(PREFIX, file_name)
         local_path = os.path.join(bundle_dir(), file_name)
-        url_value = build_raw_url(OWNER, REPO, BRANCH, repo_path)
+        url_value = build_raw_url(OWNER, REPO, BRANCH, remote_path)
         print('Fetching:', url_value)
         text_value = fetch_text(url_value)
-        compile(text_value, file_name, 'exec')
+        if file_name.endswith('.py'):
+            compile(text_value, file_name, 'exec')
         with open(local_path, 'w', encoding='utf-8') as handle:
             handle.write(text_value)
         cached_paths[file_name] = local_path
@@ -148,7 +112,11 @@ def execute_bundle(paths_map):
 
 
 def main():
-    ensure_system_tools()
+    print('Loading Kaggle bundle from GitHub...')
+    print('Owner:', OWNER)
+    print('Repo:', REPO)
+    print('Branch:', BRANCH)
+    print('Prefix:', PREFIX or '(repo root)')
     paths_map = load_bundle_with_fallback()
     execute_bundle(paths_map)
 
