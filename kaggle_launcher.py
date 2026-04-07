@@ -3,15 +3,8 @@ import sys
 import subprocess
 
 
-def pip_install(packages):
-    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q'] + packages, check=False)
-
-
-pip_install(['requests', 'ipywidgets'])
-
-import requests
-
-# Replace these values only if your GitHub repository is different.
+# Paste this whole file into one Kaggle notebook cell and run it.
+# Change these values only if your GitHub repository is different.
 OWNER = 'amerameryou1-blip'
 REPO = 'Wjsjsjsj'
 BRANCH = 'main'
@@ -25,81 +18,58 @@ BUNDLE_FILES = [
 ]
 
 
+def pip_install(packages):
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q'] + packages, check=False)
+
+
 def state_root():
-    kaggle_root = '/kaggle/working'
-    if os.path.isdir(kaggle_root):
-        return os.path.join(kaggle_root, 'kaggle_bundle_state')
-    return '/tmp/kaggle_bundle_state'
+    if os.path.isdir('/kaggle/working'):
+        return os.path.join('/kaggle/working', 'simple_linux_controller')
+    return '/tmp/simple_linux_controller'
 
 
 def bundle_dir():
-    path_value = os.path.join(state_root(), 'bundle-cache')
+    path_value = os.path.join(state_root(), 'bundle')
     os.makedirs(path_value, exist_ok=True)
     return path_value
 
 
-def build_raw_url(owner_value, repo_value, branch_value, path_value):
-    clean_path = path_value.strip('/')
-    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + clean_path
-
-
 def repo_path(prefix_value, file_name):
-    prefix_clean = prefix_value.strip('/')
-    if prefix_clean:
-        return prefix_clean + '/' + file_name
+    clean_prefix = str(prefix_value or '').strip().strip('/')
+    if clean_prefix:
+        return clean_prefix + '/' + file_name
     return file_name
 
 
-def fetch_text(url_value):
-    response = requests.get(url_value, timeout=60)
-    response.raise_for_status()
-    return response.text
+def raw_url(owner_value, repo_value, branch_value, path_value):
+    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + path_value.strip('/')
 
 
-def fetch_bundle():
-    cached_paths = {}
+def fetch_bundle(requests_module):
+    paths_map = {}
     for file_name in BUNDLE_FILES:
-        remote_path = repo_path(PREFIX, file_name)
-        local_path = os.path.join(bundle_dir(), file_name)
-        url_value = build_raw_url(OWNER, REPO, BRANCH, remote_path)
+        repo_file_path = repo_path(PREFIX, file_name)
+        url_value = raw_url(OWNER, REPO, BRANCH, repo_file_path)
         print('Fetching:', url_value)
-        text_value = fetch_text(url_value)
+        response = requests_module.get(url_value, timeout=60)
+        response.raise_for_status()
+        text_value = response.text
         if file_name.endswith('.py'):
             compile(text_value, file_name, 'exec')
+        local_path = os.path.join(bundle_dir(), file_name)
         with open(local_path, 'w', encoding='utf-8') as handle:
             handle.write(text_value)
-        cached_paths[file_name] = local_path
-    return cached_paths
+        paths_map[file_name] = local_path
+    return paths_map
 
 
-def load_cached_bundle():
-    cached_paths = {}
-    for file_name in BUNDLE_FILES:
-        local_path = os.path.join(bundle_dir(), file_name)
-        if not os.path.exists(local_path):
-            return None
-        cached_paths[file_name] = local_path
-    return cached_paths
-
-
-def load_bundle_with_fallback():
-    try:
-        return fetch_bundle()
-    except Exception as exc:
-        print('Fetch failed:', str(exc))
-        cached = load_cached_bundle()
-        if cached:
-            print('Using cached bundle from previous run.')
-            return cached
-        raise
-
-
-def execute_bundle(paths_map):
+def run_bundle(paths_map):
     support_path = paths_map['browser_controller_support.py']
     main_path = paths_map['browser_controller_main.py']
 
     support_ns = {'__name__': 'browser_controller_support'}
-    support_code = open(support_path, 'r', encoding='utf-8').read()
+    with open(support_path, 'r', encoding='utf-8') as handle:
+        support_code = handle.read()
     exec(compile(support_code, support_path, 'exec'), support_ns)
 
     main_ns = {
@@ -107,18 +77,26 @@ def execute_bundle(paths_map):
         '__browser_support__': support_ns,
         '__browser_bundle_paths__': paths_map,
     }
-    main_code = open(main_path, 'r', encoding='utf-8').read()
+    with open(main_path, 'r', encoding='utf-8') as handle:
+        main_code = handle.read()
     exec(compile(main_code, main_path, 'exec'), main_ns)
 
 
 def main():
-    print('Loading Kaggle bundle from GitHub...')
+    print('Simple Kaggle launcher')
     print('Owner:', OWNER)
     print('Repo:', REPO)
     print('Branch:', BRANCH)
     print('Prefix:', PREFIX or '(repo root)')
-    paths_map = load_bundle_with_fallback()
-    execute_bundle(paths_map)
+    print('Installing small Python packages...')
+    pip_install(['requests', 'ipywidgets'])
+
+    import requests
+
+    print('Downloading bundle files from GitHub...')
+    paths_map = fetch_bundle(requests)
+    print('Starting dashboard...')
+    run_bundle(paths_map)
 
 
 if __name__ == '__main__':
