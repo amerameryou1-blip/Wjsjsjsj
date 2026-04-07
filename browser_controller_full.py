@@ -1,4 +1,4 @@
-"""Simple standalone entry point for the Kaggle bundle."""
+"""Standalone entry point for the one-tap Kaggle controller bundle."""
 
 from browser_controller_main import launch_dashboard
 
