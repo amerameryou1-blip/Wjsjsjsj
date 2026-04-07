@@ -1,108 +1,148 @@
-# Kaggle Desktop Controller Fix Pack
+# Zorin-Style Kaggle Desktop Pack
 
-This repository now contains a cleaner, Kaggle-focused browser desktop bundle.
+This repository has been fully rewritten for the Kaggle notebook environment.
 
-It is built for the situation you described:
-- run inside a Kaggle notebook runtime
-- open a desktop-like X11 session under Xvfb
-- launch Chromium or Chrome
-- see the desktop through a live screenshot surface
-- drag, hold, right-click, and scroll more reliably
-- download files and apps
-- run AppImages, shell scripts, folders, and extracted archives
-- read and write the remote clipboard
-- copy shell output back to your browser clipboard
+## What this project is now
+It **does not try to boot a full Zorin OS ISO inside Kaggle**.
+Instead, it recreates the **Windows-like Zorin experience** on top of the Ubuntu-based Kaggle runtime by installing and configuring a lightweight **XFCE desktop** with a **bottom taskbar**, **Whisker Menu**, persistent browser profile, persistent downloads, and notebook-side remote control tools.
+
+That is the practical version that fits Kaggle:
+- install desktop packages into the current notebook runtime
+- save desktop state, downloads, profile, wallpaper, and config in **`/kaggle/working/zorin_kaggle_desktop`**
+- restore the layout and files on the next run
+- keep controlling it from the notebook
+
+## Research-backed decisions used in the rewrite
+The rewrite was based on documentation and reference pages, not pure guessing.
+
+1. **Kaggle persistence**
+   - The persistent working area is `/kaggle/working`, so this project saves state there.
+
+2. **Zorin OS direction**
+   - Zorin OS is Ubuntu-based and has been built around **GNOME** and **Xfce** variants.
+   - That makes an **Xfce-based Windows-like recreation** a realistic Kaggle target.
+
+3. **Windows-like app menu**
+   - Xfce’s **Whisker Menu** is documented as a searchable applications launcher.
+   - That gives us a Start-menu-like experience.
+
+4. **Fixing long-press / context-menu issues**
+   - `ipyevents` documents `prevent_default_action=True` for suppressing default right-click context menus.
+   - That is used on the live screenshot surface.
+
+5. **Fixing drag / hold behavior**
+   - `xdotool` documents `mousedown` and `mouseup` separately.
+   - The rewritten controller uses those instead of only fast click events.
+
+6. **Fixing the scrot filename bug pattern**
+   - `scrot` supports explicit output files and overwrite mode.
+   - The rewrite reuses one capture file instead of generating endless numbered screenshots.
 
 ## Files
-- `kaggle_launcher.py` — installs tools, fetches the bundle, then starts it
-- `browser_controller_main.py` — notebook UI and interaction layer
-- `browser_controller_support.py` — X11, clipboard, download, screenshot, and GitHub helpers
-- `browser_controller_full.py` — combined convenience copy
+- `kaggle_launcher.py` — main bootstrap entry point for Kaggle
+- `browser_controller_support.py` — install, state, desktop, capture, input, download, and GitHub helpers
+- `browser_controller_main.py` — Jupyter/Kaggle UI for controlling the desktop
+- `browser_controller_full.py` — convenience wrapper entry point
 
-## 10 critical problems fixed
-1. **Unreadable bundle format**  
-   The old main/support files were effectively collapsed into one unreadable line, which made real debugging and extension painful.
+## Main features
+- full rewrite for Kaggle
+- installs a **Zorin-style XFCE desktop stack**
+- saves state in **`/kaggle/working/zorin_kaggle_desktop`**
+- creates a **Windows-like bottom panel**
+- uses a **Whisker Menu** launcher flow
+- writes theme + desktop layout files into persistent Kaggle storage
+- creates a persistent **browser profile**
+- creates a persistent **downloads** folder
+- supports **download → extract → run/open** workflows
+- supports **AppImage**, shell scripts, folders, archives, and normal files
+- supports **remote clipboard read/write**
+- supports **paste fallback** and **type text fallback**
+- supports **separate mouse-down/mouse-up** for drag and hold
+- suppresses notebook/browser context menus on the live screen
+- includes a **shell runner** with copyable output
+- includes optional **GitHub push** for the rewritten files
 
-2. **No proper desktop bootstrap**  
-   There was not a reliable Kaggle-friendly flow to start Xvfb, a window manager, terminal, and downloads view.
+## What gets saved in Kaggle
+Everything important is kept under:
 
-3. **Long-click and right-click conflicts**  
-   Long press and right-click behavior could leak back into the notebook/browser context instead of acting like a remote desktop.
+`/kaggle/working/zorin_kaggle_desktop`
 
-4. **Broken drag model**  
-   Good remote control needs separate mouse-down and mouse-up tracking. Without that, dragging and hold actions feel wrong.
+Important subfolders:
+- `home/` — persistent desktop home directory
+- `downloads/` — downloaded files and apps
+- `browser-profile/` — persistent browser state
+- `captures/` — reusable screenshot output file
+- `logs/` — runtime logs
+- `wallpapers/` — generated wallpaper assets
+- `bundle-cache/` — fetched Python bundle cache
 
-5. **Clipboard workflow was weak**  
-   There was no strong remote clipboard read/write flow, no paste fallback for terminals, and no easy “copy output” helper.
+## Why this is the right Kaggle shape
+Kaggle notebook sessions are temporary, so package installs may need to be re-run when a fresh runtime starts.
 
-6. **Downloads were not treated like first-class objects**  
-   The bundle did not provide a clear managed downloads folder, refreshable file list, or notebook download links.
+However, the **desktop configuration and files** are saved into `/kaggle/working`, so the rewritten launcher restores the environment shape quickly on later runs.
 
-7. **Running downloaded apps was clumsy**  
-   AppImages, shell scripts, archives, and folders need different handling, and that handling was not strong enough.
+That gives you the best practical result in Kaggle:
+- temporary runtime packages
+- persistent user state and downloaded content
 
-8. **Browser state and downloads were not locked into Kaggle storage**  
-   The improved bundle pins profile and downloads inside `/kaggle/working/browser_controller_state`.
-
-9. **No built-in shell diagnostics**  
-   A practical Kaggle desktop controller should include a command runner with output that can be copied quickly.
-
-10. **Poor observability and recovery**  
-    The bundle needed better logging, status cards, placeholder screenshots, and fallback behavior when capture fails.
-
-## What the upgraded bundle adds
-- automatic Xvfb readiness checks
-- optional lightweight desktop session startup
-- Chrome/Chromium launch with a managed profile
-- managed downloads directory in Kaggle working storage
-- screenshot refresh and auto-refresh controls
-- ipyevents-based mouse handling with default action suppression
-- better long-press / hold / drag behavior
-- remote clipboard read and write
-- terminal paste fallback via `Ctrl+Shift+V` and `Shift+Insert`
-- direct text typing fallback through `xdotool type`
-- shell command runner with copyable output
-- download URL → file workflow
-- run/open workflow for AppImage, `.sh`, folders, archives, and normal files
-- notebook download links through `FileLinks`
-- optional GitHub push from inside Kaggle
-
-## Kaggle usage
-The fastest way is to run the launcher directly from GitHub:
+## Launch from Kaggle
+Fastest path:
 
 ```python
 import requests
 exec(requests.get('https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/kaggle_launcher.py').text)
 ```
 
-You can also upload the files into a Kaggle notebook and run:
+Or after uploading the files manually:
 
 ```python
 exec(open('kaggle_launcher.py', 'r', encoding='utf-8').read())
 ```
 
-## Important runtime paths
-- State root: `/kaggle/working/browser_controller_state`
-- Downloads: `/kaggle/working/browser_controller_state/downloads`
-- Browser profile: `/kaggle/working/browser_controller_state/chrome-profile`
-- Logs: `/kaggle/working/browser_controller_state/logs`
-- Captures: `/kaggle/working/browser_controller_state/captures`
+## What the notebook UI gives you
+### Session tools
+- Install / Repair
+- Start desktop
+- Apply Zorin layout
+- Open browser
+- Open terminal
+- Open files
+- Refresh screen
 
-## Clipboard notes
-The notebook-side “copy to browser clipboard” helpers use `navigator.clipboard`, which requires a secure browser context. Kaggle notebook pages are normally served over HTTPS, so this is usually fine.
+### Input tools
+- live screenshot surface
+- better mobile touch handling
+- drag / hold support
+- scroll support
+- release stuck mouse buttons
 
-If a terminal or app ignores normal paste shortcuts:
-- try **Paste text** with target mode set to **Terminal**
-- or use **Type text** to inject the text directly as keystrokes
+### Clipboard tools
+- read remote clipboard
+- write remote clipboard
+- paste text using terminal-style shortcuts
+- type text directly as keys
+- copy shell output back to the browser clipboard
 
-## Raw bundle URLs
-- Launcher: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/kaggle_launcher.py
-- Main: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/browser_controller_main.py
-- Support: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/browser_controller_support.py
-- Combined: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/browser_controller_full.py
+### Download tools
+- download by URL
+- save file with a chosen name
+- extract archives
+- run/open downloaded files
+- zip all downloads
+- notebook download links
 
-## GitHub file links
-- Launcher: https://github.com/amerameryou1-blip/Wjsjsjsj/blob/main/kaggle_launcher.py
-- Main: https://github.com/amerameryou1-blip/Wjsjsjsj/blob/main/browser_controller_main.py
-- Support: https://github.com/amerameryou1-blip/Wjsjsjsj/blob/main/browser_controller_support.py
-- Combined: https://github.com/amerameryou1-blip/Wjsjsjsj/blob/main/browser_controller_full.py
+### GitHub tools
+- paste a token
+- push the rewritten bundle files back to your repo
+
+## Practical limitation
+This project recreates a **Zorin-style desktop experience**, not the full official Zorin distribution image.
+
+In Kaggle, that is the realistic and reproducible path.
+
+## Repository URLs
+- Repo: https://github.com/amerameryou1-blip/Wjsjsjsj
+- Launcher raw: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/kaggle_launcher.py
+- Main raw: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/browser_controller_main.py
+- Support raw: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/browser_controller_support.py
+- Full raw: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/browser_controller_full.py
