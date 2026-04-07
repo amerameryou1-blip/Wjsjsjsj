@@ -2,24 +2,16 @@ SUPPORT = globals().get('__browser_support__', globals())
 if not SUPPORT:
     raise RuntimeError('Support module not loaded by launcher')
 
-import io
 import os
+import io
+import html
 import time
 import json
-import html
 import threading
 import traceback
 
 import ipywidgets as widgets
-from IPython.display import HTML, Javascript, FileLink, FileLinks, clear_output, display
-
-try:
-    from PIL import Image as PILImage
-    from PIL import ImageDraw, ImageFont
-except Exception:
-    PILImage = None
-    ImageDraw = None
-    ImageFont = None
+from IPython.display import HTML, Javascript, FileLinks, clear_output, display
 
 try:
     from ipyevents import Event
@@ -29,13 +21,12 @@ except Exception:
 DISPLAY_VALUE = SUPPORT['DISPLAY_VALUE']
 SCREEN_W = SUPPORT['SCREEN_W']
 SCREEN_H = SUPPORT['SCREEN_H']
+STATE_DIR_NAME = SUPPORT['STATE_DIR_NAME']
 URL_GOOGLE = SUPPORT['URL_GOOGLE']
-URL_GOOGLE_LOGIN = SUPPORT['URL_GOOGLE_LOGIN']
-URL_KAGGLE_CPU_SEARCH = SUPPORT['URL_KAGGLE_CPU_SEARCH']
-URL_CODEX_WEB = SUPPORT['URL_CODEX_WEB']
-URL_CODEX_APP = SUPPORT['URL_CODEX_APP']
-URL_CODEX_CLI_RELEASES = SUPPORT['URL_CODEX_CLI_RELEASES']
-URL_ANTIGRAVITY_APP = SUPPORT['URL_ANTIGRAVITY_APP']
+URL_GITHUB = SUPPORT['URL_GITHUB']
+URL_KAGGLE = SUPPORT['URL_KAGGLE']
+URL_ZORIN = SUPPORT['URL_ZORIN']
+URL_XFCE_DOCS = SUPPORT['URL_XFCE_DOCS']
 DEFAULT_OWNER = SUPPORT['DEFAULT_OWNER']
 DEFAULT_REPO = SUPPORT['DEFAULT_REPO']
 DEFAULT_BRANCH = SUPPORT['DEFAULT_BRANCH']
@@ -43,25 +34,23 @@ DEFAULT_PREFIX = SUPPORT['DEFAULT_PREFIX']
 DEFAULT_MAIN_PATH = SUPPORT['DEFAULT_MAIN_PATH']
 DEFAULT_SUPPORT_PATH = SUPPORT['DEFAULT_SUPPORT_PATH']
 DEFAULT_README_PATH = SUPPORT['DEFAULT_README_PATH']
+RESEARCH_NOTES = SUPPORT['RESEARCH_NOTES']
 ensure_state_dirs = SUPPORT['ensure_state_dirs']
-run_shell = SUPPORT['run_shell']
-run_list = SUPPORT['run_list']
-find_browser_binary = SUPPORT['find_browser_binary']
-file_read_text = SUPPORT['file_read_text']
-file_write_text = SUPPORT['file_write_text']
 load_json = SUPPORT['load_json']
 save_json = SUPPORT['save_json']
-detect_cpu_info = SUPPORT['detect_cpu_info']
-profile_has_previous_session = SUPPORT['profile_has_previous_session']
-prune_profile = SUPPORT['prune_profile']
+append_log = SUPPORT['append_log']
+file_read_text = SUPPORT['file_read_text']
+run_shell = SUPPORT['run_shell']
+run_list = SUPPORT['run_list']
+human_size = SUPPORT['human_size']
+now_text = SUPPORT['now_text']
 html_message_box = SUPPORT['html_message_box']
-list_download_files_html = SUPPORT['list_download_files_html']
-github_validate_token = SUPPORT['github_validate_token']
-github_check_repo_access = SUPPORT['github_check_repo_access']
-github_upsert_file = SUPPORT['github_upsert_file']
-github_upsert_many = SUPPORT['github_upsert_many']
+detect_cpu_info = SUPPORT['detect_cpu_info']
+install_or_repair_stack = SUPPORT['install_or_repair_stack']
 ensure_xvfb_running = SUPPORT['ensure_xvfb_running']
 ensure_desktop_session = SUPPORT['ensure_desktop_session']
+apply_zorin_layout = SUPPORT['apply_zorin_layout']
+find_browser_binary = SUPPORT['find_browser_binary']
 launch_browser = SUPPORT['launch_browser']
 launch_terminal = SUPPORT['launch_terminal']
 launch_file_manager = SUPPORT['launch_file_manager']
@@ -78,802 +67,770 @@ set_clipboard_text = SUPPORT['set_clipboard_text']
 smart_paste_text = SUPPORT['smart_paste_text']
 capture_screen_bytes = SUPPORT['capture_screen_bytes']
 list_download_files = SUPPORT['list_download_files']
-zip_downloads = SUPPORT['zip_downloads']
+list_download_files_html = SUPPORT['list_download_files_html']
 download_file = SUPPORT['download_file']
-run_downloaded_file = SUPPORT['run_downloaded_file']
 extract_archive = SUPPORT['extract_archive']
-human_size = SUPPORT['human_size']
-now_text = SUPPORT['now_text']
-append_log = SUPPORT['append_log']
+run_downloaded_file = SUPPORT['run_downloaded_file']
+zip_downloads = SUPPORT['zip_downloads']
+github_validate_token = SUPPORT['github_validate_token']
+github_check_repo_access = SUPPORT['github_check_repo_access']
+github_upsert_many = SUPPORT['github_upsert_many']
 
 
-CRITICAL_PROBLEMS = [
-    ('Unreadable bundle', 'The old support and main files were collapsed into one line, making real maintenance nearly impossible.'),
-    ('No desktop session bootstrap', 'There was no reliable desktop/window-manager startup path for Kaggle Xvfb sessions.'),
-    ('Long-press opened notebook UI', 'Right-click and long-press behavior could trigger notebook context menus instead of remote desktop actions.'),
-    ('Weak drag model', 'Mouse down and mouse up were not handled like a real remote desktop, so dragging and hold actions felt broken.'),
-    ('Clipboard bridge was incomplete', 'There was no dependable path for remote clipboard read/write, terminal paste fallbacks, or copy-output helpers.'),
-    ('Downloads were not first-class', 'There was no managed downloads folder, no refreshable file list, and no direct notebook download links.'),
-    ('Running downloaded apps was clumsy', 'AppImage, shell scripts, archives, and folders were not handled through a clear run/open workflow.'),
-    ('Browser profile was fragile', 'Downloads and browser state were not pinned cleanly to Kaggle persistent working storage.'),
-    ('No shell diagnostics', 'There was no built-in command runner with copyable output for troubleshooting inside the same notebook.'),
-    ('Poor visibility and recovery', 'Logging, status reporting, session summaries, and fallback behavior were not strong enough for real notebook use.'),
-]
-
-
-class KaggleDesktopController:
+class ZorinKaggleDesktopApp:
     def __init__(self):
         self.paths = ensure_state_dirs()
-        self.saved_state = load_json(self.paths['state_json'], {})
+        self.state = load_json(self.paths['state_json'], {})
         self.capture_lock = threading.Lock()
         self.auto_refresh_stop = threading.Event()
         self.auto_refresh_thread = None
-        self.status_lines = []
-        self.last_capture_at = ''
-        self.last_error = ''
         self.pressed_buttons = set()
-        self.browser_side_output_buffer = ''
+        self.last_pointer = {'x': SCREEN_W // 2, 'y': SCREEN_H // 2}
+        self.touch_active = False
         self.bundle_paths = globals().get('__browser_bundle_paths__', {})
+        self.last_shell_output = ''
+        self.last_status = ''
 
         self._build_widgets()
-        self._render()
         self._attach_events()
-        self._startup_sequence()
+        self._render()
+        self._startup()
 
     def _build_widgets(self):
-        issue_items = []
-        for index, (title_text, body_text) in enumerate(CRITICAL_PROBLEMS, start=1):
-            issue_items.append(
-                '<div style="padding:12px 14px;border:1px solid #1e293b;border-radius:16px;background:#020617;">'
-                '<div style="font-size:12px;color:#38bdf8;letter-spacing:.08em;text-transform:uppercase;">Issue ' + str(index) + '</div>'
-                '<div style="font-size:15px;font-weight:700;color:#f8fafc;margin-top:4px;">' + html.escape(title_text) + '</div>'
-                '<div style="font-size:13px;line-height:1.6;color:#cbd5e1;margin-top:6px;">' + html.escape(body_text) + '</div>'
-                '</div>'
+        research_cards = []
+        for note in RESEARCH_NOTES:
+            research_cards.append(
+                '<div style="padding:12px 14px;border:1px solid #1e293b;border-radius:16px;background:#020617;color:#cbd5e1;font-size:13px;line-height:1.6;">'
+                + html.escape(note)
+                + '</div>'
             )
 
         self.header_html = widgets.HTML(
             value=(
-                '<div style="padding:18px 20px;border:1px solid #1e293b;border-radius:24px;'
-                'background:linear-gradient(135deg,#020617,#0f172a 55%,#111827);color:#f8fafc;">'
-                '<div style="font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:#38bdf8;">Kaggle desktop controller</div>'
-                '<div style="font-size:30px;font-weight:800;margin-top:8px;">Kaggle browser desktop fix pack</div>'
-                '<div style="font-size:14px;line-height:1.7;color:#cbd5e1;margin-top:10px;max-width:900px;">'
-                'This notebook UI now focuses on the Kaggle environment: start a desktop, open Chromium, drag with real button-down/button-up behavior, '
-                'download files, run AppImages or shell scripts, read and write the remote clipboard, and copy command output back to your browser clipboard.'
+                '<div style="padding:18px 20px;border:1px solid #1e293b;border-radius:24px;background:linear-gradient(135deg,#020617,#0f172a 55%,#172554);color:#f8fafc;">'
+                '<div style="font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:#38bdf8;">Kaggle desktop rewrite</div>'
+                '<div style="font-size:30px;font-weight:800;margin-top:8px;">Zorin-style Windows-like Linux for Kaggle</div>'
+                '<div style="font-size:14px;line-height:1.75;color:#cbd5e1;margin-top:10px;max-width:960px;">'
+                'This is a full rewrite aimed at the Kaggle notebook environment. It recreates a Zorin-like Windows-style desktop using XFCE, '
+                'keeps state under <b>/kaggle/working/' + html.escape(STATE_DIR_NAME) + '</b>, fixes long-press/context-menu problems on the live screen, '
+                'and adds download, run, clipboard, shell, and GitHub update tools.'
                 '</div>'
                 '</div>'
             )
         )
-        self.issues_html = widgets.HTML(
-            value=(
-                '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;">'
-                + ''.join(issue_items)
-                + '</div>'
-            )
+        self.research_html = widgets.HTML(
+            value='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">' + ''.join(research_cards) + '</div>'
         )
 
-        self.status_html = widgets.HTML()
-        self.log_html = widgets.HTML(value=html_message_box('info', 'Activity log', 'Starting notebook controller...'))
-
+        self.status_html = widgets.HTML(value=html_message_box('info', 'Ready', 'Building Zorin-style Kaggle desktop UI...'))
         self.screen_widget = widgets.Image(
             format='png',
             layout=widgets.Layout(width='100%', max_width='1280px', height='auto', border='1px solid #334155'),
         )
         self.pointer_help_html = widgets.HTML(
             value=(
-                '<div style="font-size:13px;color:#cbd5e1;line-height:1.65;">'
-                '<b>Pointer fixes:</b> the screenshot surface blocks context-menu defaults, translates press/release separately, '
-                'supports drag + hold, and throttles noisy move events. If paste shortcuts fail in a terminal, use <b>Paste text</b> or <b>Type text</b>. '
-                'If the screen looks stale, click <b>Refresh screen</b>.'
+                '<div style="font-size:13px;line-height:1.7;color:#cbd5e1;">'
+                '<b>Input fixes:</b> the live surface suppresses browser context-menu behavior, uses separate mouse-down and mouse-up actions for drag/hold, '
+                'supports touch hold on mobile, throttles move spam, and reuses one screenshot file to avoid the old scrot filename bug.'
                 '</div>'
             )
         )
 
+        self.install_button = widgets.Button(description='Install / Repair', icon='wrench')
+        self.start_desktop_button = widgets.Button(description='Start desktop', icon='desktop')
+        self.apply_layout_button = widgets.Button(description='Apply Zorin layout', icon='paint-brush')
+        self.open_browser_button = widgets.Button(description='Open browser', icon='globe')
+        self.open_terminal_button = widgets.Button(description='Open terminal', icon='terminal')
+        self.open_files_button = widgets.Button(description='Open files', icon='folder-open')
+        self.refresh_screen_button = widgets.Button(description='Refresh screen', icon='camera')
+        self.release_mouse_button = widgets.Button(description='Release mouse', icon='hand-paper-o')
+
         self.url_input = widgets.Text(
-            value=self.saved_state.get('last_url', URL_GOOGLE),
-            placeholder='https://example.com',
+            value=self.state.get('last_url', URL_GOOGLE),
             description='URL',
             layout=widgets.Layout(width='100%'),
         )
-        self.refresh_interval = widgets.Dropdown(
-            options=[('0.7s', 0.7), ('1.0s', 1.0), ('1.5s', 1.5), ('2.0s', 2.0), ('3.0s', 3.0)],
-            value=self.saved_state.get('refresh_seconds', 1.0),
-            description='Auto',
-            layout=widgets.Layout(width='170px'),
-        )
         self.auto_refresh_toggle = widgets.ToggleButton(
-            value=self.saved_state.get('auto_refresh', True),
+            value=self.state.get('auto_refresh', True),
             description='Auto refresh',
             icon='refresh',
             layout=widgets.Layout(width='150px'),
         )
-
-        self.start_desktop_button = widgets.Button(description='Start desktop', icon='desktop')
-        self.open_browser_button = widgets.Button(description='Open browser', icon='globe')
-        self.open_terminal_button = widgets.Button(description='Open terminal', icon='terminal')
-        self.open_files_button = widgets.Button(description='Open downloads', icon='folder-open')
-        self.refresh_screen_button = widgets.Button(description='Refresh screen', icon='camera')
-        self.release_buttons_button = widgets.Button(description='Release mouse', icon='hand-stop-o')
+        self.refresh_interval = widgets.Dropdown(
+            options=[('0.8s', 0.8), ('1.0s', 1.0), ('1.5s', 1.5), ('2.0s', 2.0), ('3.0s', 3.0)],
+            value=self.state.get('refresh_seconds', 1.0),
+            description='Every',
+            layout=widgets.Layout(width='180px'),
+        )
 
         self.quick_google_button = widgets.Button(description='Google')
-        self.quick_login_button = widgets.Button(description='Login')
-        self.quick_codex_button = widgets.Button(description='Codex web')
-        self.quick_codex_docs_button = widgets.Button(description='Codex app')
-        self.quick_releases_button = widgets.Button(description='CLI releases')
-        self.quick_antigravity_button = widgets.Button(description='AntiGravity')
+        self.quick_github_button = widgets.Button(description='GitHub')
+        self.quick_kaggle_button = widgets.Button(description='Kaggle')
+        self.quick_zorin_button = widgets.Button(description='Zorin')
+        self.quick_docs_button = widgets.Button(description='XFCE Docs')
 
-        self.left_click_button = widgets.Button(description='Left click')
-        self.double_click_button = widgets.Button(description='Double click')
-        self.right_click_button = widgets.Button(description='Right click')
-        self.middle_click_button = widgets.Button(description='Middle click')
+        self.mouse_click_button = widgets.Button(description='Left click')
+        self.mouse_double_click_button = widgets.Button(description='Double click')
+        self.mouse_right_button = widgets.Button(description='Right click')
         self.scroll_up_button = widgets.Button(description='Scroll up')
         self.scroll_down_button = widgets.Button(description='Scroll down')
 
+        self.key_input = widgets.Text(value='ctrl+l', description='Key', layout=widgets.Layout(width='100%'))
+        self.send_key_button = widgets.Button(description='Send key', icon='keyboard-o')
         self.clipboard_area = widgets.Textarea(
-            value=self.saved_state.get('clipboard_text', ''),
-            placeholder='Paste text here for remote clipboard, terminal paste, or typing.',
+            value=self.state.get('clipboard_text', ''),
+            placeholder='Clipboard / paste / typing text',
             layout=widgets.Layout(width='100%', height='150px'),
         )
-        self.remote_clipboard_button = widgets.Button(description='Read remote clipboard', icon='download')
-        self.set_remote_clipboard_button = widgets.Button(description='Set remote clipboard', icon='upload')
-        self.paste_remote_button = widgets.Button(description='Paste text', icon='paste')
-        self.type_text_button = widgets.Button(description='Type text', icon='keyboard-o')
-        self.copy_area_button = widgets.Button(description='Copy area to browser', icon='copy')
-        self.copy_remote_to_browser_button = widgets.Button(description='Copy remote clipboard to browser', icon='clone')
-        self.shortcut_copy_button = widgets.Button(description='Send Ctrl+C')
-        self.shortcut_cut_button = widgets.Button(description='Send Ctrl+X')
-        self.shortcut_paste_button = widgets.Button(description='Send Ctrl+V')
-        self.shortcut_term_paste_button = widgets.Button(description='Send Ctrl+Shift+V')
-        self.terminal_paste_mode = widgets.ToggleButtons(
-            options=['Normal app', 'Terminal'],
-            value=self.saved_state.get('paste_mode', 'Normal app'),
-            description='Target',
-            layout=widgets.Layout(width='320px'),
-        )
-
-        self.command_input = widgets.Text(
-            value=self.saved_state.get('last_command', ''),
-            placeholder='Example: ls -lah /kaggle/working',
-            description='Shell',
-            layout=widgets.Layout(width='100%'),
-        )
-        self.run_command_button = widgets.Button(description='Run shell command', icon='play')
-        self.copy_output_button = widgets.Button(description='Copy output to browser', icon='copy')
-        self.command_output = widgets.Textarea(
-            value='',
-            placeholder='Shell output appears here.',
-            layout=widgets.Layout(width='100%', height='240px'),
-        )
+        self.clipboard_read_button = widgets.Button(description='Read remote clipboard', icon='download')
+        self.clipboard_set_button = widgets.Button(description='Set remote clipboard', icon='upload')
+        self.clipboard_paste_button = widgets.Button(description='Paste text', icon='paste')
+        self.clipboard_type_button = widgets.Button(description='Type text', icon='keyboard-o')
+        self.copy_output_button = widgets.Button(description='Copy shell output', icon='clipboard')
 
         self.download_url_input = widgets.Text(
-            value=self.saved_state.get('last_download_url', ''),
-            placeholder='https://example.com/file.AppImage',
-            description='Download',
+            value=self.state.get('download_url', ''),
+            description='URL',
             layout=widgets.Layout(width='100%'),
         )
         self.download_name_input = widgets.Text(
-            value=self.saved_state.get('last_download_name', ''),
-            placeholder='Optional override name',
+            value=self.state.get('download_name', ''),
             description='Name',
             layout=widgets.Layout(width='100%'),
         )
-        self.download_now_button = widgets.Button(description='Download now', icon='download')
-        self.refresh_downloads_button = widgets.Button(description='Refresh files', icon='refresh')
-        self.zip_downloads_button = widgets.Button(description='Zip downloads', icon='archive')
+        self.download_button = widgets.Button(description='Download', icon='cloud-download')
+        self.download_refresh_button = widgets.Button(description='Refresh list', icon='refresh')
+        self.download_run_button = widgets.Button(description='Run / Open', icon='play')
+        self.download_extract_button = widgets.Button(description='Extract', icon='archive')
+        self.download_zip_button = widgets.Button(description='Zip all', icon='file-archive-o')
+        self.file_selector = widgets.Dropdown(options=[('No files yet', '')], description='File', layout=widgets.Layout(width='100%'))
+        self.downloads_html = widgets.HTML()
+        self.download_links_output = widgets.Output()
 
-        self.run_path_input = widgets.Text(
-            value=self.saved_state.get('last_run_path', ''),
-            placeholder='downloads/my-app.AppImage or full path',
-            description='Run path',
-            layout=widgets.Layout(width='100%'),
+        self.shell_input = widgets.Textarea(
+            value=self.state.get('shell_command', 'ls -la /kaggle/working'),
+            placeholder='Type a shell command',
+            layout=widgets.Layout(width='100%', height='120px'),
         )
-        self.run_args_input = widgets.Text(
-            value=self.saved_state.get('last_run_args', ''),
-            placeholder='Optional arguments',
-            description='Args',
-            layout=widgets.Layout(width='100%'),
-        )
-        self.run_file_button = widgets.Button(description='Run / open', icon='rocket')
-        self.extract_file_button = widgets.Button(description='Extract archive', icon='folder-open-o')
-        self.downloads_output = widgets.Output(layout=widgets.Layout(border='1px solid #1e293b', padding='12px'))
-
-        bundle_default_owner = self.saved_state.get('bundle_owner', DEFAULT_OWNER)
-        bundle_default_repo = self.saved_state.get('bundle_repo', DEFAULT_REPO)
-        bundle_default_branch = self.saved_state.get('bundle_branch', DEFAULT_BRANCH)
-        self.github_token_input = widgets.Password(
+        self.shell_run_button = widgets.Button(description='Run command', icon='play')
+        self.shell_output = widgets.Textarea(
             value='',
-            placeholder='Optional GitHub token',
-            description='Token',
-            layout=widgets.Layout(width='100%'),
-        )
-        self.github_owner_input = widgets.Text(value=bundle_default_owner, description='Owner', layout=widgets.Layout(width='100%'))
-        self.github_repo_input = widgets.Text(value=bundle_default_repo, description='Repo', layout=widgets.Layout(width='100%'))
-        self.github_branch_input = widgets.Text(value=bundle_default_branch, description='Branch', layout=widgets.Layout(width='100%'))
-        self.push_bundle_button = widgets.Button(description='Push local bundle files', icon='github')
-        self.github_result_html = widgets.HTML(
-            value=html_message_box('info', 'GitHub sync', 'Optional: push the notebook-side bundle files back to your repository from inside Kaggle.')
+            placeholder='Shell output will appear here',
+            layout=widgets.Layout(width='100%', height='200px'),
         )
 
-    def _render(self):
-        display(HTML(
-            '<style>'
-            '.ipyevents-watched:focus{outline:none!important;box-shadow:none!important;}'
-            '.widget-image img{image-rendering:auto;touch-action:none;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none;}'
-            '.jupyter-widgets.widget-tab > .p-TabBar .p-TabBar-tab{font-weight:600;}'
-            '</style>'
-        ))
+        self.github_token_input = widgets.Password(value='', description='Token', layout=widgets.Layout(width='100%'))
+        self.github_owner_input = widgets.Text(value=DEFAULT_OWNER, description='Owner', layout=widgets.Layout(width='100%'))
+        self.github_repo_input = widgets.Text(value=DEFAULT_REPO, description='Repo', layout=widgets.Layout(width='100%'))
+        self.github_branch_input = widgets.Text(value=DEFAULT_BRANCH, description='Branch', layout=widgets.Layout(width='100%'))
+        self.github_prefix_input = widgets.Text(value=DEFAULT_PREFIX, description='Prefix', layout=widgets.Layout(width='100%'))
+        self.github_update_button = widgets.Button(description='Push rewritten files', icon='github')
+        self.github_result_html = widgets.HTML(value='')
 
-        quick_links_row = widgets.HBox([
-            self.quick_google_button,
-            self.quick_login_button,
-            self.quick_codex_button,
-            self.quick_codex_docs_button,
-            self.quick_releases_button,
-            self.quick_antigravity_button,
-        ])
+        self.diagnostics_html = widgets.HTML()
+        self.log_html = widgets.HTML(value=html_message_box('info', 'Activity log', 'Waiting for actions...'))
 
-        session_box = widgets.VBox([
-            widgets.HTML(value='<h3 style="margin:0 0 8px 0;color:#f8fafc;">Session and desktop</h3>'),
-            widgets.HBox([self.start_desktop_button, self.open_terminal_button, self.open_files_button]),
-            widgets.HBox([self.url_input, widgets.VBox([self.open_browser_button, self.refresh_screen_button])]),
-            widgets.HBox([self.auto_refresh_toggle, self.refresh_interval, self.release_buttons_button]),
-            quick_links_row,
-        ])
-
-        mouse_box = widgets.VBox([
-            widgets.HTML(value='<h3 style="margin:0 0 8px 0;color:#f8fafc;">Mouse quick actions</h3>'),
+        self.session_box = widgets.VBox([
             widgets.HBox([
-                self.left_click_button,
-                self.double_click_button,
-                self.right_click_button,
-                self.middle_click_button,
+                self.install_button,
+                self.start_desktop_button,
+                self.apply_layout_button,
+                self.open_browser_button,
+                self.open_terminal_button,
+                self.open_files_button,
+                self.refresh_screen_button,
+                self.release_mouse_button,
+            ], layout=widgets.Layout(flex_flow='row wrap', gap='8px')),
+            self.url_input,
+            widgets.HBox([self.auto_refresh_toggle, self.refresh_interval], layout=widgets.Layout(gap='10px')),
+            widgets.HBox([
+                self.quick_google_button,
+                self.quick_github_button,
+                self.quick_kaggle_button,
+                self.quick_zorin_button,
+                self.quick_docs_button,
+            ], layout=widgets.Layout(flex_flow='row wrap', gap='8px')),
+        ])
+
+        self.mouse_box = widgets.VBox([
+            widgets.HBox([
+                self.mouse_click_button,
+                self.mouse_double_click_button,
+                self.mouse_right_button,
                 self.scroll_up_button,
                 self.scroll_down_button,
-            ]),
+            ], layout=widgets.Layout(flex_flow='row wrap', gap='8px')),
         ])
 
-        screen_box = widgets.VBox([
-            widgets.HTML(value='<h3 style="margin:0 0 8px 0;color:#f8fafc;">Live desktop surface</h3>'),
-            self.screen_widget,
-            self.pointer_help_html,
-        ])
-
-        clipboard_box = widgets.VBox([
-            widgets.HTML(value='<h3 style="margin:0 0 8px 0;color:#f8fafc;">Clipboard and text bridge</h3>'),
+        self.clipboard_box = widgets.VBox([
+            self.key_input,
+            widgets.HBox([self.send_key_button], layout=widgets.Layout(gap='8px')),
             self.clipboard_area,
-            widgets.HBox([self.remote_clipboard_button, self.set_remote_clipboard_button, self.copy_area_button, self.copy_remote_to_browser_button]),
-            widgets.HBox([self.paste_remote_button, self.type_text_button, self.terminal_paste_mode]),
-            widgets.HBox([self.shortcut_copy_button, self.shortcut_cut_button, self.shortcut_paste_button, self.shortcut_term_paste_button]),
+            widgets.HBox([
+                self.clipboard_read_button,
+                self.clipboard_set_button,
+                self.clipboard_paste_button,
+                self.clipboard_type_button,
+                self.copy_output_button,
+            ], layout=widgets.Layout(flex_flow='row wrap', gap='8px')),
         ])
 
-        shell_box = widgets.VBox([
-            widgets.HTML(value='<h3 style="margin:0 0 8px 0;color:#f8fafc;">Shell tools</h3>'),
-            widgets.HBox([self.command_input, widgets.VBox([self.run_command_button, self.copy_output_button])]),
-            self.command_output,
+        self.shell_box = widgets.VBox([
+            self.shell_input,
+            widgets.HBox([self.shell_run_button], layout=widgets.Layout(gap='8px')),
+            self.shell_output,
         ])
 
-        downloads_box = widgets.VBox([
-            widgets.HTML(value='<h3 style="margin:0 0 8px 0;color:#f8fafc;">Downloads and app runner</h3>'),
+        self.downloads_box = widgets.VBox([
             self.download_url_input,
             self.download_name_input,
-            widgets.HBox([self.download_now_button, self.refresh_downloads_button, self.zip_downloads_button]),
-            self.run_path_input,
-            self.run_args_input,
-            widgets.HBox([self.run_file_button, self.extract_file_button]),
-            self.downloads_output,
+            widgets.HBox([
+                self.download_button,
+                self.download_refresh_button,
+                self.download_run_button,
+                self.download_extract_button,
+                self.download_zip_button,
+            ], layout=widgets.Layout(flex_flow='row wrap', gap='8px')),
+            self.file_selector,
+            self.downloads_html,
+            self.download_links_output,
         ])
 
-        github_box = widgets.VBox([
-            widgets.HTML(value='<h3 style="margin:0 0 8px 0;color:#f8fafc;">Optional GitHub push</h3>'),
+        self.github_box = widgets.VBox([
             self.github_token_input,
-            widgets.HBox([self.github_owner_input, self.github_repo_input, self.github_branch_input]),
-            self.push_bundle_button,
+            self.github_owner_input,
+            self.github_repo_input,
+            self.github_branch_input,
+            self.github_prefix_input,
+            widgets.HBox([self.github_update_button], layout=widgets.Layout(gap='8px')),
             self.github_result_html,
         ])
 
-        diagnostics_box = widgets.VBox([
-            widgets.HTML(value='<h3 style="margin:0 0 8px 0;color:#f8fafc;">Diagnostics</h3>'),
-            self.status_html,
+        self.diagnostics_box = widgets.VBox([
+            self.diagnostics_html,
             self.log_html,
         ])
 
-        accordion = widgets.Accordion(children=[
-            session_box,
-            mouse_box,
-            clipboard_box,
-            shell_box,
-            downloads_box,
-            github_box,
-            diagnostics_box,
+        self.accordion = widgets.Accordion(children=[
+            self.session_box,
+            self.mouse_box,
+            self.clipboard_box,
+            self.shell_box,
+            self.downloads_box,
+            self.github_box,
+            self.diagnostics_box,
         ])
-        accordion.set_title(0, 'Session')
-        accordion.set_title(1, 'Mouse')
-        accordion.set_title(2, 'Clipboard')
-        accordion.set_title(3, 'Shell')
-        accordion.set_title(4, 'Downloads')
-        accordion.set_title(5, 'GitHub')
-        accordion.set_title(6, 'Diagnostics')
-        accordion.selected_index = 0
-
-        root = widgets.VBox([
-            self.header_html,
-            self.issues_html,
-            screen_box,
-            accordion,
-        ])
-        display(root)
+        for index, title in enumerate(['Session', 'Mouse', 'Clipboard + Keys', 'Shell', 'Downloads', 'GitHub', 'Diagnostics']):
+            self.accordion.set_title(index, title)
+        self.accordion.selected_index = 0
 
     def _attach_events(self):
-        self.start_desktop_button.on_click(lambda _: self._safe_action('Start desktop', self.start_desktop))
-        self.open_browser_button.on_click(lambda _: self._safe_action('Open browser', self.open_browser))
-        self.open_terminal_button.on_click(lambda _: self._safe_action('Open terminal', self.open_terminal))
-        self.open_files_button.on_click(lambda _: self._safe_action('Open downloads folder', self.open_downloads_folder))
-        self.refresh_screen_button.on_click(lambda _: self._safe_action('Refresh screen', self.refresh_screen))
-        self.release_buttons_button.on_click(lambda _: self._safe_action('Release mouse buttons', self.release_all_buttons))
-
-        self.quick_google_button.on_click(lambda _: self._safe_action('Open Google', lambda: self.open_url(URL_GOOGLE)))
-        self.quick_login_button.on_click(lambda _: self._safe_action('Open Google login', lambda: self.open_url(URL_GOOGLE_LOGIN)))
-        self.quick_codex_button.on_click(lambda _: self._safe_action('Open Codex web', lambda: self.open_url(URL_CODEX_WEB)))
-        self.quick_codex_docs_button.on_click(lambda _: self._safe_action('Open Codex app', lambda: self.open_url(URL_CODEX_APP)))
-        self.quick_releases_button.on_click(lambda _: self._safe_action('Open Codex CLI releases', lambda: self.open_url(URL_CODEX_CLI_RELEASES)))
-        self.quick_antigravity_button.on_click(lambda _: self._safe_action('Open AntiGravity', lambda: self.open_url(URL_ANTIGRAVITY_APP)))
-
-        self.left_click_button.on_click(lambda _: self._safe_action('Left click', lambda: self.pointer_click(1, 1)))
-        self.double_click_button.on_click(lambda _: self._safe_action('Double click', lambda: self.pointer_click(1, 2)))
-        self.right_click_button.on_click(lambda _: self._safe_action('Right click', lambda: self.pointer_click(3, 1)))
-        self.middle_click_button.on_click(lambda _: self._safe_action('Middle click', lambda: self.pointer_click(2, 1)))
-        self.scroll_up_button.on_click(lambda _: self._safe_action('Scroll up', lambda: scroll_vertical(-3)))
-        self.scroll_down_button.on_click(lambda _: self._safe_action('Scroll down', lambda: scroll_vertical(3)))
-
-        self.remote_clipboard_button.on_click(lambda _: self._safe_action('Read remote clipboard', self.read_remote_clipboard))
-        self.set_remote_clipboard_button.on_click(lambda _: self._safe_action('Set remote clipboard', self.write_remote_clipboard))
-        self.paste_remote_button.on_click(lambda _: self._safe_action('Paste text', self.paste_remote_text))
-        self.type_text_button.on_click(lambda _: self._safe_action('Type text', self.type_text_from_area))
-        self.copy_area_button.on_click(lambda _: self._safe_action('Copy area to browser clipboard', lambda: self.copy_to_browser_clipboard(self.clipboard_area.value, 'Clipboard area copied to browser clipboard.')))
-        self.copy_remote_to_browser_button.on_click(lambda _: self._safe_action('Copy remote clipboard to browser', self.copy_remote_clipboard_to_browser))
-        self.shortcut_copy_button.on_click(lambda _: self._safe_action('Send Ctrl+C', lambda: send_key('ctrl+c')))
-        self.shortcut_cut_button.on_click(lambda _: self._safe_action('Send Ctrl+X', lambda: send_key('ctrl+x')))
-        self.shortcut_paste_button.on_click(lambda _: self._safe_action('Send Ctrl+V', lambda: send_key('ctrl+v')))
-        self.shortcut_term_paste_button.on_click(lambda _: self._safe_action('Send Ctrl+Shift+V', lambda: send_key('ctrl+shift+v')))
-
-        self.run_command_button.on_click(lambda _: self._safe_action('Run shell command', self.run_shell_command))
-        self.copy_output_button.on_click(lambda _: self._safe_action('Copy output', lambda: self.copy_to_browser_clipboard(self.command_output.value, 'Shell output copied to browser clipboard.')))
-
-        self.download_now_button.on_click(lambda _: self._safe_action('Download file', self.download_now))
-        self.refresh_downloads_button.on_click(lambda _: self._safe_action('Refresh downloads', self.refresh_downloads_view))
-        self.zip_downloads_button.on_click(lambda _: self._safe_action('Zip downloads', self.zip_downloads_action))
-        self.run_file_button.on_click(lambda _: self._safe_action('Run file', self.run_selected_file))
-        self.extract_file_button.on_click(lambda _: self._safe_action('Extract archive', self.extract_selected_archive))
-
-        self.push_bundle_button.on_click(lambda _: self._safe_action('Push bundle to GitHub', self.push_bundle_to_github))
-
+        self.install_button.on_click(self._on_install)
+        self.start_desktop_button.on_click(self._on_start_desktop)
+        self.apply_layout_button.on_click(self._on_apply_layout)
+        self.open_browser_button.on_click(self._on_open_browser)
+        self.open_terminal_button.on_click(self._on_open_terminal)
+        self.open_files_button.on_click(self._on_open_files)
+        self.refresh_screen_button.on_click(self._on_refresh_screen)
+        self.release_mouse_button.on_click(self._on_release_mouse)
+        self.quick_google_button.on_click(lambda _: self._open_url(URL_GOOGLE))
+        self.quick_github_button.on_click(lambda _: self._open_url(URL_GITHUB))
+        self.quick_kaggle_button.on_click(lambda _: self._open_url(URL_KAGGLE))
+        self.quick_zorin_button.on_click(lambda _: self._open_url(URL_ZORIN))
+        self.quick_docs_button.on_click(lambda _: self._open_url(URL_XFCE_DOCS))
+        self.mouse_click_button.on_click(lambda _: self._manual_click(1, 1))
+        self.mouse_double_click_button.on_click(lambda _: self._manual_click(1, 2))
+        self.mouse_right_button.on_click(lambda _: self._manual_click(3, 1))
+        self.scroll_up_button.on_click(lambda _: self._manual_scroll(-6))
+        self.scroll_down_button.on_click(lambda _: self._manual_scroll(6))
+        self.send_key_button.on_click(self._on_send_key)
+        self.clipboard_read_button.on_click(self._on_read_clipboard)
+        self.clipboard_set_button.on_click(self._on_set_clipboard)
+        self.clipboard_paste_button.on_click(self._on_paste_text)
+        self.clipboard_type_button.on_click(self._on_type_text)
+        self.copy_output_button.on_click(self._on_copy_shell_output)
+        self.download_button.on_click(self._on_download)
+        self.download_refresh_button.on_click(lambda _: self._refresh_downloads())
+        self.download_run_button.on_click(self._on_run_selected_file)
+        self.download_extract_button.on_click(self._on_extract_selected_file)
+        self.download_zip_button.on_click(self._on_zip_downloads)
+        self.shell_run_button.on_click(self._on_run_shell)
+        self.github_update_button.on_click(self._on_push_github)
         self.auto_refresh_toggle.observe(self._on_auto_refresh_change, names='value')
-        self.refresh_interval.observe(self._on_refresh_interval_change, names='value')
+        self.refresh_interval.observe(self._on_interval_change, names='value')
 
         if Event is not None:
             self.pointer_events = Event(
                 source=self.screen_widget,
-                watched_events=['mousedown', 'mouseup', 'mousemove', 'wheel', 'contextmenu', 'dragstart', 'mouseleave', 'touchstart', 'touchmove', 'touchend', 'touchcancel'],
+                watched_events=['mousedown', 'mouseup', 'mousemove', 'wheel', 'contextmenu', 'dragstart', 'touchstart', 'touchmove', 'touchend'],
                 prevent_default_action=True,
-                wait=16,
+                wait=20,
                 throttle_or_debounce='throttle',
             )
-            self.pointer_events.on_dom_event(self.handle_pointer_event)
-        else:
-            self._log('ipyevents is not available; screenshot clicks are disabled.', kind='warning')
+            self.pointer_events.on_dom_event(self._on_surface_event)
 
-    def _startup_sequence(self):
-        ready = ensure_xvfb_running(self.paths)
-        self._log(ready['message'], kind='success' if ready.get('ok') else 'warning')
-        self.refresh_screen()
-        self.refresh_downloads_view()
-        self.refresh_status()
-        if self.auto_refresh_toggle.value:
-            self.start_auto_refresh_loop()
-
-    def _safe_action(self, label, callback):
-        try:
-            result = callback()
-            self.save_state()
-            self.refresh_status()
-            return result
-        except Exception as exc:
-            self.last_error = str(exc)
-            self._log(label + ' failed: ' + str(exc), kind='error')
-            traceback_text = traceback.format_exc(limit=2)
-            append_log('errors.log', label + ' failed\n' + traceback_text)
-            self.refresh_status()
-
-    def _log(self, text_value, kind='info'):
-        line = '[' + now_text() + '] ' + str(text_value)
-        self.status_lines.insert(0, {'kind': kind, 'text': line})
-        self.status_lines = self.status_lines[:12]
-        items = []
-        tone_map = {
-            'info': '#38bdf8',
-            'success': '#34d399',
-            'warning': '#f59e0b',
-            'error': '#fb7185',
-        }
-        for entry in self.status_lines:
-            items.append(
-                '<div style="padding:8px 10px;border:1px solid #1e293b;border-radius:12px;background:#020617;color:#e2e8f0;">'
-                '<span style="color:' + tone_map.get(entry['kind'], '#38bdf8') + ';font-weight:700;">●</span> '
-                + html.escape(entry['text'])
-                + '</div>'
+    def _render(self):
+        clear_output(wait=True)
+        style_html = widgets.HTML(
+            value=(
+                '<style>'
+                '.ipyevents-watched:focus{outline:1px solid rgba(56,189,248,.55)!important;}'
+                '.widget-textarea textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}'
+                '</style>'
             )
-        self.log_html.value = '<div style="display:grid;gap:8px;">' + ''.join(items) + '</div>'
+        )
+        display(widgets.VBox([
+            style_html,
+            self.header_html,
+            self.research_html,
+            self.status_html,
+            self.screen_widget,
+            self.pointer_help_html,
+            self.accordion,
+        ], layout=widgets.Layout(gap='14px')))
 
-    def refresh_status(self):
-        cpu_info = detect_cpu_info()
-        browser_binary = find_browser_binary() or 'Not found'
-        active_window = get_active_window_title() or 'No active X11 window detected yet'
-        download_files = list_download_files(self.paths, limit=200)
-        profile_state = 'Warm profile' if profile_has_previous_session(self.paths['profile_dir']) else 'Fresh profile'
-        last_error_html = html.escape(self.last_error) if self.last_error else 'None'
+    def _startup(self):
+        self._refresh_downloads()
+        self._refresh_diagnostics()
+        self._refresh_screen(silent=True)
+        if self.auto_refresh_toggle.value:
+            self._start_auto_refresh()
+        self._set_status('success', 'Ready', 'Zorin-style Kaggle desktop UI loaded. State root: ' + self.paths['root'])
 
-        cards = [
-            ('Display', DISPLAY_VALUE),
-            ('Screen size', str(SCREEN_W) + ' × ' + str(SCREEN_H)),
-            ('CPU', html.escape(str(cpu_info['cpu_count'])) + ' cores'),
-            ('Memory', html.escape(str(cpu_info['memory_gb'])) + ' GB'),
-            ('Browser', html.escape(os.path.basename(browser_binary))),
-            ('Downloads', str(len(download_files)) + ' files'),
-            ('Profile', profile_state),
-            ('Last capture', html.escape(self.last_capture_at or 'Not captured yet')),
-            ('Active window', html.escape(active_window)),
-            ('State root', html.escape(self.paths['root'])),
+    def _save_state(self):
+        self.state['last_url'] = self.url_input.value
+        self.state['auto_refresh'] = bool(self.auto_refresh_toggle.value)
+        self.state['refresh_seconds'] = float(self.refresh_interval.value)
+        self.state['clipboard_text'] = self.clipboard_area.value
+        self.state['download_url'] = self.download_url_input.value
+        self.state['download_name'] = self.download_name_input.value
+        self.state['shell_command'] = self.shell_input.value
+        save_json(self.paths['state_json'], self.state)
+
+    def _log(self, message_text):
+        append_log('ui.log', message_text)
+        self.log_html.value = html_message_box('info', 'Activity log', message_text)
+
+    def _set_status(self, kind, title_text, body_text):
+        self.last_status = body_text
+        self.status_html.value = html_message_box(kind, title_text, body_text)
+        self._log(title_text + ': ' + body_text)
+        self._refresh_diagnostics()
+
+    def _refresh_diagnostics(self):
+        install_report = load_json(self.paths['install_report'], {})
+        session_report = load_json(self.paths['session_report'], {})
+        cpu = detect_cpu_info()
+        browser = find_browser_binary() or 'not found'
+        downloads = list_download_files()
+        active_title = get_active_window_title() or '(no active window title yet)'
+
+        facts = [
+            ('State root', self.paths['root']),
             ('Persistent', 'Yes' if self.paths['persistent'] else 'No'),
-            ('Last error', last_error_html),
+            ('Display', DISPLAY_VALUE),
+            ('Screen', str(SCREEN_W) + 'x' + str(SCREEN_H)),
+            ('Browser', browser),
+            ('Active window', active_title),
+            ('Downloads count', str(len(downloads))),
+            ('Install report', self.paths['install_report']),
+            ('Session report', self.paths['session_report']),
+            ('CPU', (cpu.get('cpu_model') or 'Unknown') + ' • ' + str(cpu.get('cpu_count') or 0) + ' cores • ' + str(cpu.get('memory_gb') or 0) + ' GB RAM'),
+            ('Last install timestamp', install_report.get('timestamp', 'Not run yet')),
+            ('Last session timestamp', session_report.get('timestamp', 'Not started yet')),
         ]
-
-        rows = []
-        for title_text, value_text in cards:
-            rows.append(
-                '<div style="padding:12px;border:1px solid #1e293b;border-radius:16px;background:#020617;">'
-                '<div style="font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.08em;">' + title_text + '</div>'
-                '<div style="font-size:14px;color:#f8fafc;font-weight:700;margin-top:6px;line-height:1.5;">' + value_text + '</div>'
+        card_items = []
+        for label, value in facts:
+            card_items.append(
+                '<div style="padding:12px 14px;border:1px solid #1e293b;border-radius:14px;background:#020617;">'
+                '<div style="font-size:12px;color:#38bdf8;text-transform:uppercase;letter-spacing:.08em;">' + html.escape(label) + '</div>'
+                '<div style="font-size:13px;line-height:1.65;color:#e2e8f0;margin-top:4px;white-space:pre-wrap;">' + html.escape(str(value)) + '</div>'
                 '</div>'
             )
-        self.status_html.value = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">' + ''.join(rows) + '</div>'
+        self.diagnostics_html.value = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">' + ''.join(card_items) + '</div>'
 
-    def save_state(self):
-        save_json(self.paths['state_json'], {
-            'last_url': self.url_input.value,
-            'refresh_seconds': self.refresh_interval.value,
-            'auto_refresh': bool(self.auto_refresh_toggle.value),
-            'clipboard_text': self.clipboard_area.value,
-            'paste_mode': self.terminal_paste_mode.value,
-            'last_command': self.command_input.value,
-            'last_download_url': self.download_url_input.value,
-            'last_download_name': self.download_name_input.value,
-            'last_run_path': self.run_path_input.value,
-            'last_run_args': self.run_args_input.value,
-            'bundle_owner': self.github_owner_input.value,
-            'bundle_repo': self.github_repo_input.value,
-            'bundle_branch': self.github_branch_input.value,
-        })
-
-    def build_placeholder_screen(self, message_text):
-        if PILImage is None or ImageDraw is None:
-            return b''
-        image = PILImage.new('RGB', (1280, 720), color=(15, 23, 42))
-        draw = ImageDraw.Draw(image)
-        font = ImageFont.load_default() if ImageFont is not None else None
-        draw.rectangle((40, 40, 1240, 680), outline=(56, 189, 248), width=3)
-        draw.text((80, 90), 'Kaggle desktop screen unavailable', fill=(248, 250, 252), font=font)
-        draw.text((80, 140), message_text[:300], fill=(203, 213, 225), font=font)
-        draw.text((80, 210), 'Try: Start desktop -> Open browser -> Refresh screen', fill=(52, 211, 153), font=font)
-        buffer = io.BytesIO()
-        image.save(buffer, format='PNG')
-        return buffer.getvalue()
-
-    def refresh_screen(self):
+    def _refresh_screen(self, silent=False):
         with self.capture_lock:
-            try:
-                png_bytes = capture_screen_bytes(self.paths, max_width=1280)
-                self.screen_widget.value = png_bytes
-                self.last_capture_at = now_text()
-                self._log('Screen refreshed.', kind='success')
-            except Exception as exc:
-                self.screen_widget.value = self.build_placeholder_screen(str(exc))
-                self.last_capture_at = now_text() + ' (placeholder)'
-                self._log('Screen refresh used placeholder: ' + str(exc), kind='warning')
-        self.refresh_status()
+            image_bytes = capture_screen_bytes()
+            self.screen_widget.value = image_bytes
+        if not silent:
+            self._set_status('success', 'Screen updated', 'Live desktop surface refreshed at ' + now_text())
 
-    def start_auto_refresh_loop(self):
+    def _start_auto_refresh(self):
+        self.auto_refresh_stop.clear()
         if self.auto_refresh_thread and self.auto_refresh_thread.is_alive():
             return
-        self.auto_refresh_stop.clear()
 
-        def loop():
-            while not self.auto_refresh_stop.wait(max(0.5, float(self.refresh_interval.value or 1.0))):
+        def worker():
+            while not self.auto_refresh_stop.is_set():
+                time.sleep(float(self.refresh_interval.value))
+                if self.auto_refresh_stop.is_set():
+                    break
                 try:
-                    self.refresh_screen()
-                except Exception:
-                    pass
+                    self._refresh_screen(silent=True)
+                except Exception as exc:
+                    append_log('ui.log', 'auto refresh error: ' + str(exc))
 
-        self.auto_refresh_thread = threading.Thread(target=loop, daemon=True)
+        self.auto_refresh_thread = threading.Thread(target=worker, daemon=True)
         self.auto_refresh_thread.start()
-        self._log('Auto refresh enabled.', kind='info')
 
-    def stop_auto_refresh_loop(self):
+    def _stop_auto_refresh(self):
         self.auto_refresh_stop.set()
-        self._log('Auto refresh paused.', kind='warning')
 
     def _on_auto_refresh_change(self, change):
         if change['new']:
-            self.start_auto_refresh_loop()
+            self._start_auto_refresh()
+            self._set_status('info', 'Auto refresh enabled', 'Screen will refresh every ' + str(self.refresh_interval.value) + ' seconds.')
         else:
-            self.stop_auto_refresh_loop()
-        self.save_state()
+            self._stop_auto_refresh()
+            self._set_status('warning', 'Auto refresh disabled', 'Automatic screen updates are paused.')
+        self._save_state()
 
-    def _on_refresh_interval_change(self, change):
-        self._log('Refresh interval set to ' + str(change['new']) + 's.', kind='info')
+    def _on_interval_change(self, change):
+        self._save_state()
         if self.auto_refresh_toggle.value:
-            self.stop_auto_refresh_loop()
-            self.start_auto_refresh_loop()
-        self.save_state()
+            self._stop_auto_refresh()
+            self._start_auto_refresh()
 
-    def start_desktop(self):
-        result = ensure_desktop_session(self.paths)
-        self._log(result['message'], kind='success')
-        time.sleep(1.0)
-        self.refresh_screen()
+    def _open_url(self, url_value):
+        self.url_input.value = url_value
+        self._save_state()
+        self._on_open_browser(None)
 
-    def open_url(self, url_value):
-        proc = launch_browser(self.paths, url_value)
-        self._log('Opened URL in browser pid=' + str(proc.pid) + ': ' + url_value, kind='success')
-        time.sleep(1.0)
-        self.refresh_screen()
-        return proc
+    def _manual_click(self, button_value, repeat):
+        click(button_value, repeat=repeat)
+        self._set_status('success', 'Mouse action', 'Sent click command for button ' + str(button_value) + '.')
 
-    def open_browser(self):
-        url_value = (self.url_input.value or '').strip() or URL_GOOGLE
-        return self.open_url(url_value)
+    def _manual_scroll(self, amount_value):
+        scroll_vertical(amount_value)
+        self._set_status('success', 'Scroll sent', 'Sent vertical scroll command.')
 
-    def open_terminal(self):
-        proc = launch_terminal(self.paths)
-        if not proc:
-            raise RuntimeError('xterm is not available')
-        self._log('Opened terminal pid=' + str(proc.pid), kind='success')
-        time.sleep(0.6)
-        self.refresh_screen()
-        return proc
+    def _release_all_pressed(self):
+        for button_value in sorted(self.pressed_buttons):
+            mouse_up(button_value)
+        self.pressed_buttons = set()
+        self.touch_active = False
 
-    def open_downloads_folder(self):
-        proc = launch_file_manager(self.paths, self.paths['downloads_dir'])
-        if not proc:
-            raise RuntimeError('No file manager is available')
-        self._log('Opened downloads folder pid=' + str(proc.pid), kind='success')
-        time.sleep(0.6)
-        self.refresh_screen()
-        return proc
+    def _event_button_to_x11(self, event):
+        button_index = int(event.get('button', 0))
+        mapping = {0: 1, 1: 2, 2: 3}
+        return mapping.get(button_index, 1)
 
-    def release_all_buttons(self):
-        for button_value in list(self.pressed_buttons):
-            try:
-                mouse_up(button_value)
-            except Exception:
-                pass
-            self.pressed_buttons.discard(button_value)
-        self._log('Released all tracked mouse buttons.', kind='info')
-
-    def pointer_click(self, button_value, repeat_count):
-        self.release_all_buttons()
-        click(button_value, repeat=repeat_count, delay_ms=120)
-        self._log('Sent mouse click button=' + str(button_value) + ' repeat=' + str(repeat_count), kind='success')
-        time.sleep(0.15)
-        self.refresh_screen()
-
-    def event_xy(self, event):
+    def _coords_from_event(self, event):
         if 'dataX' in event and 'dataY' in event:
-            return int(event['dataX']), int(event['dataY'])
-        if 'arrayX' in event and 'arrayY' in event:
-            return int(event['arrayX']), int(event['arrayY'])
-        if event.get('changedTouches'):
-            touch = event['changedTouches'][0]
-            if 'dataX' in touch and 'dataY' in touch:
-                return int(touch['dataX']), int(touch['dataY'])
-        width = float(event.get('boundingRectWidth') or 1)
-        height = float(event.get('boundingRectHeight') or 1)
-        left = float(event.get('boundingRectLeft') or 0)
-        top = float(event.get('boundingRectTop') or 0)
-        client_x = float(event.get('clientX') or left) - left
-        client_y = float(event.get('clientY') or top) - top
-        x_value = max(0, min(SCREEN_W - 1, int((client_x / max(width, 1.0)) * SCREEN_W)))
-        y_value = max(0, min(SCREEN_H - 1, int((client_y / max(height, 1.0)) * SCREEN_H)))
+            x_value = int(event.get('dataX') or 0)
+            y_value = int(event.get('dataY') or 0)
+        else:
+            relative_x = float(event.get('relativeX', 0) or 0)
+            relative_y = float(event.get('relativeY', 0) or 0)
+            width_value = float(event.get('boundingRectWidth', 1) or 1)
+            height_value = float(event.get('boundingRectHeight', 1) or 1)
+            x_value = int((relative_x / max(1.0, width_value)) * SCREEN_W)
+            y_value = int((relative_y / max(1.0, height_value)) * SCREEN_H)
+        x_value = max(0, min(SCREEN_W - 1, x_value))
+        y_value = max(0, min(SCREEN_H - 1, y_value))
+        self.last_pointer = {'x': x_value, 'y': y_value}
         return x_value, y_value
 
-    def event_button_to_x11(self, button_value):
-        return {0: 1, 1: 2, 2: 3}.get(button_value, 1)
+    def _touch_coords(self, event):
+        touches = event.get('changedTouches') or event.get('touches') or []
+        if not touches:
+            return self.last_pointer['x'], self.last_pointer['y']
+        touch = touches[0]
+        if 'dataX' in touch and 'dataY' in touch:
+            x_value = int(touch.get('dataX') or 0)
+            y_value = int(touch.get('dataY') or 0)
+        else:
+            relative_x = float(touch.get('relativeX', 0) or 0)
+            relative_y = float(touch.get('relativeY', 0) or 0)
+            width_value = float(event.get('boundingRectWidth', 1) or 1)
+            height_value = float(event.get('boundingRectHeight', 1) or 1)
+            x_value = int((relative_x / max(1.0, width_value)) * SCREEN_W)
+            y_value = int((relative_y / max(1.0, height_value)) * SCREEN_H)
+        x_value = max(0, min(SCREEN_W - 1, x_value))
+        y_value = max(0, min(SCREEN_H - 1, y_value))
+        self.last_pointer = {'x': x_value, 'y': y_value}
+        return x_value, y_value
 
-    def handle_pointer_event(self, event):
-        event_type = event.get('type')
-        if event_type in ('contextmenu', 'dragstart'):
-            return
+    def _on_surface_event(self, event):
+        try:
+            event_type = event.get('type', '')
+            if event_type == 'dragstart':
+                return
 
-        x_value, y_value = self.event_xy(event)
-        move_mouse(x_value, y_value)
+            if event_type.startswith('touch'):
+                x_value, y_value = self._touch_coords(event)
+                move_mouse(x_value, y_value)
+                if event_type == 'touchstart' and not self.touch_active:
+                    mouse_down(1)
+                    self.pressed_buttons.add(1)
+                    self.touch_active = True
+                elif event_type == 'touchend' and self.touch_active:
+                    mouse_up(1)
+                    self.pressed_buttons.discard(1)
+                    self.touch_active = False
+                return
 
-        if event_type in ('mousedown', 'touchstart'):
-            button_value = 1 if event_type == 'touchstart' else self.event_button_to_x11(event.get('button'))
-            if button_value not in self.pressed_buttons:
+            x_value, y_value = self._coords_from_event(event)
+            move_mouse(x_value, y_value)
+
+            if event_type == 'mousedown':
+                button_value = self._event_button_to_x11(event)
                 mouse_down(button_value)
                 self.pressed_buttons.add(button_value)
-            return
+            elif event_type == 'mouseup':
+                button_value = self._event_button_to_x11(event)
+                mouse_up(button_value)
+                self.pressed_buttons.discard(button_value)
+            elif event_type == 'wheel':
+                delta_y = float(event.get('deltaY', 0) or 0)
+                scroll_vertical(-4 if delta_y < 0 else 4)
+            elif event_type == 'contextmenu':
+                click(3)
+        except Exception as exc:
+            append_log('ui.log', 'surface event error: ' + str(exc))
 
-        if event_type in ('mouseup', 'touchend', 'touchcancel', 'mouseleave'):
-            if event_type in ('touchend', 'touchcancel', 'mouseleave'):
-                buttons_to_release = list(self.pressed_buttons)
-            else:
-                buttons_to_release = [self.event_button_to_x11(event.get('button'))]
-            for button_value in buttons_to_release:
-                if button_value in self.pressed_buttons:
-                    mouse_up(button_value)
-                    self.pressed_buttons.discard(button_value)
-            return
+    def _on_install(self, _):
+        self._save_state()
+        try:
+            report = install_or_repair_stack(include_browser=True)
+            browser_name = report.get('browser_found') or 'not found'
+            self._set_status('success', 'Install / repair finished', 'Packages checked. Browser: ' + str(browser_name) + '. Report saved to ' + self.paths['install_report'])
+        except Exception as exc:
+            self._set_status('error', 'Install failed', str(exc))
 
-        if event_type == 'wheel':
-            delta_y = float(event.get('deltaY') or 0)
-            steps = max(1, min(8, int(abs(delta_y) / 45.0) + 1))
-            scroll_vertical(steps if delta_y > 0 else -steps)
-            return
+    def _on_start_desktop(self, _):
+        self._save_state()
+        try:
+            report = ensure_desktop_session()
+            self._refresh_screen(silent=True)
+            self._set_status('success', 'Desktop started', 'Desktop session ready on ' + report.get('display', DISPLAY_VALUE) + ' and saved under ' + self.paths['root'])
+        except Exception as exc:
+            self._set_status('error', 'Desktop start failed', str(exc))
 
-        if event_type in ('mousemove', 'touchmove'):
-            return
+    def _on_apply_layout(self, _):
+        try:
+            report = apply_zorin_layout()
+            self._refresh_screen(silent=True)
+            self._set_status('success', 'Zorin layout applied', 'Wallpaper, theme, panel, and desktop shortcuts refreshed. Wallpaper: ' + report.get('wallpaper_path', ''))
+        except Exception as exc:
+            self._set_status('error', 'Layout apply failed', str(exc))
 
-    def read_remote_clipboard(self):
-        self.clipboard_area.value = get_clipboard_text()
-        self._log('Read remote clipboard into the text area.', kind='success')
+    def _on_open_browser(self, _):
+        self._save_state()
+        try:
+            result = launch_browser(self.url_input.value)
+            self._set_status('success', 'Browser launched', 'Opened ' + result.get('url', self.url_input.value))
+        except Exception as exc:
+            self._set_status('error', 'Browser launch failed', str(exc))
 
-    def write_remote_clipboard(self):
-        set_clipboard_text(self.clipboard_area.value)
-        self._log('Updated the remote clipboard from the text area.', kind='success')
+    def _on_open_terminal(self, _):
+        try:
+            result = launch_terminal()
+            self._set_status('success', 'Terminal launched', 'Started ' + result.get('terminal', 'terminal'))
+        except Exception as exc:
+            self._set_status('error', 'Terminal launch failed', str(exc))
 
-    def paste_remote_text(self):
-        terminal_mode = self.terminal_paste_mode.value == 'Terminal'
-        smart_paste_text(self.clipboard_area.value, terminal_mode=terminal_mode)
-        self._log('Sent paste to the active remote window (' + self.terminal_paste_mode.value + ').', kind='success')
-        time.sleep(0.2)
-        self.refresh_screen()
+    def _on_open_files(self, _):
+        try:
+            result = launch_file_manager(self.paths['downloads_dir'])
+            self._set_status('success', 'File manager launched', 'Opened ' + result.get('target', self.paths['downloads_dir']))
+        except Exception as exc:
+            self._set_status('error', 'File manager launch failed', str(exc))
 
-    def type_text_from_area(self):
-        type_text(self.clipboard_area.value)
-        self._log('Typed text directly into the active remote window.', kind='success')
-        time.sleep(0.2)
-        self.refresh_screen()
+    def _on_refresh_screen(self, _):
+        try:
+            self._refresh_screen(silent=False)
+        except Exception as exc:
+            self._set_status('error', 'Refresh failed', str(exc))
 
-    def copy_to_browser_clipboard(self, text_value, success_message):
-        js_payload = json.dumps(text_value or '')
-        display(Javascript(
-            """
-            (async () => {
-              try {
-                await navigator.clipboard.writeText(%s);
-              } catch (error) {
-                console.error(error);
-              }
-            })();
-            """ % js_payload
-        ))
-        self._log(success_message, kind='success')
+    def _on_release_mouse(self, _):
+        self._release_all_pressed()
+        self._set_status('warning', 'Mouse released', 'Released any held mouse buttons.')
 
-    def copy_remote_clipboard_to_browser(self):
+    def _on_send_key(self, _):
+        result = send_key(self.key_input.value)
+        if result.get('ok'):
+            self._set_status('success', 'Key sent', 'Sent ' + self.key_input.value)
+        else:
+            self._set_status('error', 'Key send failed', result.get('stderr') or result.get('message') or 'Unknown error')
+
+    def _on_read_clipboard(self, _):
         text_value = get_clipboard_text()
-        self.copy_to_browser_clipboard(text_value, 'Remote clipboard copied to the browser clipboard.')
+        self.clipboard_area.value = text_value
+        self._save_state()
+        self._set_status('success', 'Clipboard loaded', 'Remote clipboard text loaded into the text area.')
 
-    def run_shell_command(self):
-        command_text = (self.command_input.value or '').strip()
+    def _on_set_clipboard(self, _):
+        result = set_clipboard_text(self.clipboard_area.value)
+        self._save_state()
+        if result.get('ok'):
+            self._set_status('success', 'Clipboard updated', 'Remote clipboard was updated.')
+        else:
+            self._set_status('error', 'Clipboard update failed', result.get('stderr') or result.get('message') or 'Unknown error')
+
+    def _on_paste_text(self, _):
+        result = smart_paste_text(self.clipboard_area.value)
+        self._save_state()
+        if result.get('ok'):
+            self._set_status('success', 'Paste sent', 'Tried terminal-style paste shortcuts after writing the remote clipboard.')
+        else:
+            self._set_status('warning', 'Paste may have failed', 'Try Type text if the target app ignores paste shortcuts.')
+
+    def _on_type_text(self, _):
+        result = type_text(self.clipboard_area.value)
+        self._save_state()
+        if result.get('ok'):
+            self._set_status('success', 'Typed text', 'Injected the text directly as keystrokes.')
+        else:
+            self._set_status('error', 'Typing failed', result.get('stderr') or result.get('message') or 'Unknown error')
+
+    def _on_run_shell(self, _):
+        self._save_state()
+        command_text = self.shell_input.value.strip()
         if not command_text:
-            raise RuntimeError('Enter a shell command first')
-        result = run_shell(command_text, timeout=240, cwd=self.paths['root'])
+            self._set_status('warning', 'No command', 'Type a shell command first.')
+            return
+        result = run_shell(command_text, timeout=3600)
         output_parts = [
             '$ ' + command_text,
             '',
-            result.get('stdout', '').rstrip(),
+            result.get('stdout', ''),
         ]
-        if result.get('stderr'):
-            output_parts.extend(['', '[stderr]', result.get('stderr', '').rstrip()])
-        output_parts.extend(['', '[exit code ' + str(result.get('returncode')) + ']'])
-        self.command_output.value = '\n'.join(part for part in output_parts if part is not None).strip() + '\n'
-        if result.get('returncode') == 0:
-            self._log('Shell command finished successfully.', kind='success')
+        stderr_text = result.get('stderr', '').strip()
+        if stderr_text:
+            output_parts.extend(['', '[stderr]', stderr_text])
+        output_parts.extend(['', '[exit code] ' + str(result.get('returncode', 1))])
+        final_output = '\n'.join(part for part in output_parts if part is not None)
+        self.shell_output.value = final_output
+        self.last_shell_output = final_output
+        if result.get('ok'):
+            self._set_status('success', 'Command completed', 'Shell command finished successfully.')
         else:
-            self._log('Shell command finished with exit code ' + str(result.get('returncode')) + '.', kind='warning')
-        self.refresh_downloads_view()
-        self.refresh_status()
+            self._set_status('warning', 'Command finished with errors', 'Exit code ' + str(result.get('returncode', 1)) + '. You can still copy the output.')
 
-    def download_now(self):
-        url_value = (self.download_url_input.value or '').strip()
-        if not url_value:
-            raise RuntimeError('Enter a download URL first')
-        output_path = download_file(url_value, self.paths, self.download_name_input.value)
-        self.run_path_input.value = output_path
-        self._log('Downloaded file to ' + output_path, kind='success')
-        self.refresh_downloads_view()
+    def _copy_text_to_browser_clipboard(self, text_value):
+        safe_text = json.dumps(text_value)
+        display(Javascript(
+            '(async()=>{'
+            'try{'
+            'if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(' + safe_text + ');}'
+            'else{const area=document.createElement("textarea");area.value=' + safe_text + ';document.body.appendChild(area);area.select();document.execCommand("copy");area.remove();}'
+            '}catch(err){console.error(err);}'
+            '})();'
+        ))
 
-    def refresh_downloads_view(self):
-        zip_path = zip_downloads(self.paths)
-        files = list_download_files(self.paths, limit=200)
-        with self.downloads_output:
-            clear_output(wait=True)
-            display(HTML(list_download_files_html(self.paths, limit=100)))
-            if files:
-                display(HTML('<div style="height:8px"></div>'))
-                display(HTML('<div style="font-weight:700;color:#f8fafc;margin-bottom:6px;">Notebook download links</div>'))
-                display(FileLinks(self.paths['downloads_dir'], recursive=True))
-                display(HTML('<div style="height:8px"></div>'))
-                display(FileLink(zip_path, result_html_prefix='Download all as zip: '))
+    def _on_copy_shell_output(self, _):
+        text_value = self.shell_output.value or self.last_shell_output or ''
+        self._copy_text_to_browser_clipboard(text_value)
+        self._set_status('success', 'Output copied', 'Tried to copy shell output into your browser clipboard.')
+
+    def _refresh_downloads(self):
+        files = list_download_files()
+        options = [('No files yet', '')] if not files else [(item['name'] + ' (' + item['size_text'] + ')', item['name']) for item in files]
+        self.file_selector.options = options
+        if files:
+            current_names = {value for _, value in options}
+            current_value = self.file_selector.value if self.file_selector.value in current_names else files[0]['name']
+            self.file_selector.value = current_value
+        self.downloads_html.value = list_download_files_html()
+        self.download_links_output.clear_output(wait=True)
+        with self.download_links_output:
+            display(FileLinks(self.paths['downloads_dir']))
+        self._refresh_diagnostics()
+
+    def _on_download(self, _):
+        self._save_state()
+        try:
+            result = download_file(self.download_url_input.value, self.download_name_input.value)
+            if result.get('ok'):
+                self._refresh_downloads()
+                self._set_status('success', 'Download finished', 'Saved ' + result.get('name', '') + ' into ' + self.paths['downloads_dir'])
             else:
-                display(HTML('<div style="font-size:13px;color:#94a3b8;margin-top:8px;">No downloaded files yet.</div>'))
-        self._log('Downloads view refreshed.', kind='info')
+                self._set_status('error', 'Download failed', result.get('message') or str(result.get('result') or 'Unknown error'))
+        except Exception as exc:
+            self._set_status('error', 'Download failed', str(exc))
 
-    def zip_downloads_action(self):
-        zip_path = zip_downloads(self.paths)
-        self.run_path_input.value = zip_path
-        self._log('Created zip bundle: ' + zip_path, kind='success')
-        self.refresh_downloads_view()
+    def _selected_file(self):
+        return (self.file_selector.value or '').strip()
 
-    def run_selected_file(self):
-        path_value = (self.run_path_input.value or '').strip()
-        if not path_value:
-            raise RuntimeError('Enter a file path first')
-        proc = run_downloaded_file(path_value, self.paths, self.run_args_input.value)
-        pid_value = getattr(proc, 'pid', None)
-        message = 'Opened or launched ' + path_value
-        if pid_value:
-            message += ' pid=' + str(pid_value)
-        self._log(message, kind='success')
-        time.sleep(0.8)
-        self.refresh_screen()
+    def _on_run_selected_file(self, _):
+        file_name = self._selected_file()
+        if not file_name:
+            self._set_status('warning', 'No file selected', 'Choose a file first.')
+            return
+        try:
+            result = run_downloaded_file(file_name)
+            self._refresh_downloads()
+            self._set_status('success', 'Run / open requested', 'Handled ' + file_name + ' with mode ' + str(result.get('mode', 'auto')))
+        except Exception as exc:
+            self._set_status('error', 'Run / open failed', str(exc))
 
-    def extract_selected_archive(self):
-        path_value = (self.run_path_input.value or '').strip()
-        if not path_value:
-            raise RuntimeError('Enter an archive path first')
-        extract_dir = extract_archive(path_value, self.paths)
-        self.run_path_input.value = extract_dir
-        self._log('Archive extracted to ' + extract_dir, kind='success')
-        self.refresh_downloads_view()
-        launch_file_manager(self.paths, extract_dir)
+    def _on_extract_selected_file(self, _):
+        file_name = self._selected_file()
+        if not file_name:
+            self._set_status('warning', 'No file selected', 'Choose an archive first.')
+            return
+        try:
+            result = extract_archive(file_name)
+            self._refresh_downloads()
+            self._set_status('success', 'Archive extracted', 'Extracted into ' + result.get('target_dir', ''))
+        except Exception as exc:
+            self._set_status('error', 'Extract failed', str(exc))
 
-    def bundle_files_to_push(self):
-        files_map = {}
-        for file_name in [DEFAULT_MAIN_PATH, DEFAULT_SUPPORT_PATH, DEFAULT_README_PATH, 'kaggle_launcher.py', 'browser_controller_full.py']:
-            path_value = None
-            if self.bundle_paths and file_name in self.bundle_paths:
-                path_value = self.bundle_paths[file_name]
-            elif os.path.exists(file_name):
-                path_value = file_name
-            elif os.path.exists(os.path.join(self.paths['bundle_dir'], file_name)):
-                path_value = os.path.join(self.paths['bundle_dir'], file_name)
-            if path_value and os.path.exists(path_value):
-                files_map[file_name] = file_read_text(path_value, '')
-        return files_map
+    def _on_zip_downloads(self, _):
+        try:
+            zip_path = zip_downloads('zorin_kaggle_downloads.zip')
+            self._refresh_downloads()
+            self._set_status('success', 'Downloads zipped', 'Created ' + zip_path)
+        except Exception as exc:
+            self._set_status('error', 'Zip failed', str(exc))
 
-    def push_bundle_to_github(self):
-        token_value = (self.github_token_input.value or '').strip()
-        owner_value = (self.github_owner_input.value or '').strip()
-        repo_value = (self.github_repo_input.value or '').strip()
-        branch_value = (self.github_branch_input.value or '').strip() or 'main'
+    def _collect_push_files(self):
+        file_map = {}
+        ordered = [
+            'README.md',
+            'kaggle_launcher.py',
+            'browser_controller_main.py',
+            'browser_controller_support.py',
+            'browser_controller_full.py',
+        ]
+        for file_name in ordered:
+            source_path = self.bundle_paths.get(file_name, file_name)
+            file_map[file_name] = file_read_text(source_path, file_read_text(file_name, ''))
+        return file_map
+
+    def _on_push_github(self, _):
+        token_value = self.github_token_input.value.strip()
+        owner_value = self.github_owner_input.value.strip() or DEFAULT_OWNER
+        repo_value = self.github_repo_input.value.strip() or DEFAULT_REPO
+        branch_value = self.github_branch_input.value.strip() or DEFAULT_BRANCH
+        prefix_value = self.github_prefix_input.value.strip()
         if not token_value:
-            raise RuntimeError('Paste a GitHub token first')
-        if not owner_value or not repo_value:
-            raise RuntimeError('Owner and repo are required')
+            self._set_status('warning', 'Missing token', 'Paste a GitHub token with contents write access.')
+            return
+        try:
+            user_info = github_validate_token(token_value)
+            repo_info = github_check_repo_access(token_value, owner_value, repo_value)
+            results = github_upsert_many(token_value, owner_value, repo_value, branch_value, self._collect_push_files(), prefix=prefix_value)
+            self.github_result_html.value = html_message_box(
+                'success',
+                'GitHub update completed',
+                'User: {user}\nRepo: {repo}\nBranch: {branch}\nFiles updated: {count}'.format(
+                    user=user_info.get('login', ''),
+                    repo=repo_info.get('full_name', owner_value + '/' + repo_value),
+                    branch=branch_value,
+                    count=len(results),
+                ),
+            )
+            self._set_status('success', 'GitHub push completed', 'Updated ' + str(len(results)) + ' files in ' + owner_value + '/' + repo_value)
+        except Exception as exc:
+            self.github_result_html.value = html_message_box('error', 'GitHub update failed', str(exc))
+            self._set_status('error', 'GitHub push failed', str(exc))
 
-        github_validate_token(token_value)
-        github_check_repo_access(token_value, owner_value, repo_value)
-        files_map = self.bundle_files_to_push()
-        if not files_map:
-            raise RuntimeError('No local bundle files were found to upload')
-        github_upsert_many(token_value, owner_value, repo_value, branch_value, files_map, message_prefix='Kaggle bundle update')
-        self.github_result_html.value = html_message_box(
-            'success',
-            'GitHub sync complete',
-            'Uploaded <b>' + str(len(files_map)) + '</b> files to <b>' + html.escape(owner_value + '/' + repo_value) + '</b> on branch <b>' + html.escape(branch_value) + '</b>.',
-        )
-        self._log('Pushed local bundle files to GitHub.', kind='success')
 
-
-app = KaggleDesktopController()
+try:
+    ZorinKaggleDesktopApp()
+except Exception as exc:
+    display(HTML('<pre style="white-space:pre-wrap;color:#ef4444;">' + html.escape(traceback.format_exc()) + '</pre>'))
+    raise
