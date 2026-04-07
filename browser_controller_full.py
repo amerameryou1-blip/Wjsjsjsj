@@ -1,9 +1,4 @@
-"""Convenience entry point for the Kaggle bundle.
-
-This file is not required by the launcher, but it can be useful when all bundle
-files are already in the same directory. It simply imports the support module
-and launches the main dashboard.
-"""
+"""Simple standalone entry point for the Kaggle bundle."""
 
 from browser_controller_main import launch_dashboard
 
