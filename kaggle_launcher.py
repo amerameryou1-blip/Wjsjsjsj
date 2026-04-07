@@ -1,15 +1,22 @@
 import os
 import sys
-import json
 import shutil
 import subprocess
 
 
 def pip_install(packages):
-    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q'] + packages, check=False)
+    env = dict(os.environ)
+    env.setdefault('PIP_ROOT_USER_ACTION', 'ignore')
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q'] + packages, check=False, env=env)
 
 
-pip_install(['requests', 'ipywidgets', 'Pillow', 'xvfbwrapper', 'ipyevents'])
+pip_install([
+    'requests',
+    'ipywidgets',
+    'Pillow',
+    'xvfbwrapper',
+    'ipyevents',
+])
 
 import requests
 
@@ -53,19 +60,51 @@ def ensure_system_tools():
     os.makedirs(os.environ['XDG_RUNTIME_DIR'], exist_ok=True)
     os.makedirs(os.path.join(state_root(), 'downloads'), exist_ok=True)
     os.makedirs(os.path.join(state_root(), 'chrome-profile'), exist_ok=True)
+    os.makedirs(os.path.join(state_root(), 'logs'), exist_ok=True)
+    os.makedirs(os.path.join(state_root(), 'captures'), exist_ok=True)
 
-    packages = [
-        'xvfb', 'xdotool', 'scrot', 'imagemagick', 'wget', 'curl', 'ca-certificates', 'fonts-liberation',
-        'libatk1.0-0', 'libatk-bridge2.0-0', 'libatspi2.0-0', 'libvulkan1', 'libxcomposite1',
-        'libxdamage1', 'libxrandr2', 'libgbm1', 'libasound2', 'libpangocairo-1.0-0',
-        'libpango-1.0-0', 'libgtk-3-0', 'libnss3', 'libxshmfence1', 'xdg-utils'
+    core_packages = [
+        'xvfb',
+        'xdotool',
+        'scrot',
+        'imagemagick',
+        'wget',
+        'curl',
+        'ca-certificates',
+        'fonts-liberation',
+        'libatk1.0-0',
+        'libatk-bridge2.0-0',
+        'libatspi2.0-0',
+        'libvulkan1',
+        'libxcomposite1',
+        'libxdamage1',
+        'libxrandr2',
+        'libgbm1',
+        'libasound2',
+        'libpangocairo-1.0-0',
+        'libpango-1.0-0',
+        'libgtk-3-0',
+        'libnss3',
+        'libxshmfence1',
+        'xdg-utils',
+        'xclip',
+        'xsel',
+        'x11-utils',
+        'x11-apps',
+        'unzip',
+        'p7zip-full',
+        'file',
+        'procps',
+    ]
+    optional_packages = [
+        'openbox',
+        'fluxbox',
+        'pcmanfm',
+        'xterm',
     ]
 
-    need_install = False
-    for tool_name in ['Xvfb', 'xdotool', 'scrot']:
-        if shutil.which(tool_name) is None:
-            need_install = True
-            break
+    required_tools = ['Xvfb', 'xdotool', 'scrot', 'xclip']
+    need_install = any(shutil.which(tool_name) is None for tool_name in required_tools)
 
     browser_found = False
     for browser_name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
@@ -78,14 +117,21 @@ def ensure_system_tools():
 
     if need_install:
         subprocess.run('apt-get update -y', shell=True, check=False)
-        subprocess.run('apt-get install -y ' + ' '.join(packages), shell=True, check=False)
+        subprocess.run('apt-get install -y ' + ' '.join(core_packages), shell=True, check=False)
+        subprocess.run('apt-get install -y ' + ' '.join(optional_packages) + ' || true', shell=True, check=False)
+
         browser_found = False
         for browser_name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
             if shutil.which(browser_name) is not None:
                 browser_found = True
                 break
+
         if not browser_found:
-            subprocess.run('wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb', shell=True, check=False)
+            subprocess.run(
+                'wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb',
+                shell=True,
+                check=False,
+            )
             subprocess.run('apt-get install -y /tmp/chrome.deb || true', shell=True, check=False)
             subprocess.run('apt-get -f install -y || true', shell=True, check=False)
             subprocess.run('apt-get install -y /tmp/chrome.deb || true', shell=True, check=False)
