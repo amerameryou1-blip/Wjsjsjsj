@@ -1,186 +1,108 @@
-# Kaggle Browser Controller Bundle
+# Kaggle Desktop Controller Fix Pack
 
-This repository stores the browser controller bundle used by the launcher and Kaggle notebook runtime.
+This repository now contains a cleaner, Kaggle-focused browser desktop bundle.
+
+It is built for the situation you described:
+- run inside a Kaggle notebook runtime
+- open a desktop-like X11 session under Xvfb
+- launch Chromium or Chrome
+- see the desktop through a live screenshot surface
+- drag, hold, right-click, and scroll more reliably
+- download files and apps
+- run AppImages, shell scripts, folders, and extracted archives
+- read and write the remote clipboard
+- copy shell output back to your browser clipboard
 
 ## Files
-- `kaggle_launcher.py` — one-cell Kaggle launcher
-- `browser_controller_main.py` — main notebook controller UI/runtime
-- `browser_controller_support.py` — support helpers, persistence, GitHub helpers
-- `browser_controller_full.py` — combined reference copy
+- `kaggle_launcher.py` — installs tools, fetches the bundle, then starts it
+- `browser_controller_main.py` — notebook UI and interaction layer
+- `browser_controller_support.py` — X11, clipboard, download, screenshot, and GitHub helpers
+- `browser_controller_full.py` — combined convenience copy
+
+## 10 critical problems fixed
+1. **Unreadable bundle format**  
+   The old main/support files were effectively collapsed into one unreadable line, which made real debugging and extension painful.
+
+2. **No proper desktop bootstrap**  
+   There was not a reliable Kaggle-friendly flow to start Xvfb, a window manager, terminal, and downloads view.
+
+3. **Long-click and right-click conflicts**  
+   Long press and right-click behavior could leak back into the notebook/browser context instead of acting like a remote desktop.
+
+4. **Broken drag model**  
+   Good remote control needs separate mouse-down and mouse-up tracking. Without that, dragging and hold actions feel wrong.
+
+5. **Clipboard workflow was weak**  
+   There was no strong remote clipboard read/write flow, no paste fallback for terminals, and no easy “copy output” helper.
+
+6. **Downloads were not treated like first-class objects**  
+   The bundle did not provide a clear managed downloads folder, refreshable file list, or notebook download links.
+
+7. **Running downloaded apps was clumsy**  
+   AppImages, shell scripts, archives, and folders need different handling, and that handling was not strong enough.
+
+8. **Browser state and downloads were not locked into Kaggle storage**  
+   The improved bundle pins profile and downloads inside `/kaggle/working/browser_controller_state`.
+
+9. **No built-in shell diagnostics**  
+   A practical Kaggle desktop controller should include a command runner with output that can be copied quickly.
+
+10. **Poor observability and recovery**  
+    The bundle needed better logging, status cards, placeholder screenshots, and fallback behavior when capture fails.
+
+## What the upgraded bundle adds
+- automatic Xvfb readiness checks
+- optional lightweight desktop session startup
+- Chrome/Chromium launch with a managed profile
+- managed downloads directory in Kaggle working storage
+- screenshot refresh and auto-refresh controls
+- ipyevents-based mouse handling with default action suppression
+- better long-press / hold / drag behavior
+- remote clipboard read and write
+- terminal paste fallback via `Ctrl+Shift+V` and `Shift+Insert`
+- direct text typing fallback through `xdotool type`
+- shell command runner with copyable output
+- download URL → file workflow
+- run/open workflow for AppImage, `.sh`, folders, archives, and normal files
+- notebook download links through `FileLinks`
+- optional GitHub push from inside Kaggle
+
+## Kaggle usage
+The fastest way is to run the launcher directly from GitHub:
+
+```python
+import requests
+exec(requests.get('https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/kaggle_launcher.py').text)
+```
+
+You can also upload the files into a Kaggle notebook and run:
+
+```python
+exec(open('kaggle_launcher.py', 'r', encoding='utf-8').read())
+```
+
+## Important runtime paths
+- State root: `/kaggle/working/browser_controller_state`
+- Downloads: `/kaggle/working/browser_controller_state/downloads`
+- Browser profile: `/kaggle/working/browser_controller_state/chrome-profile`
+- Logs: `/kaggle/working/browser_controller_state/logs`
+- Captures: `/kaggle/working/browser_controller_state/captures`
+
+## Clipboard notes
+The notebook-side “copy to browser clipboard” helpers use `navigator.clipboard`, which requires a secure browser context. Kaggle notebook pages are normally served over HTTPS, so this is usually fine.
+
+If a terminal or app ignores normal paste shortcuts:
+- try **Paste text** with target mode set to **Terminal**
+- or use **Type text** to inject the text directly as keystrokes
 
 ## Raw bundle URLs
 - Launcher: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/kaggle_launcher.py
 - Main: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/browser_controller_main.py
 - Support: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/browser_controller_support.py
-- Combined reference: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/browser_controller_full.py
+- Combined: https://raw.githubusercontent.com/amerameryou1-blip/Wjsjsjsj/main/browser_controller_full.py
 
 ## GitHub file links
 - Launcher: https://github.com/amerameryou1-blip/Wjsjsjsj/blob/main/kaggle_launcher.py
 - Main: https://github.com/amerameryou1-blip/Wjsjsjsj/blob/main/browser_controller_main.py
 - Support: https://github.com/amerameryou1-blip/Wjsjsjsj/blob/main/browser_controller_support.py
-- Combined reference: https://github.com/amerameryou1-blip/Wjsjsjsj/blob/main/browser_controller_full.py
-
-## Launcher
-```python
-import os
-import sys
-import json
-import shutil
-import subprocess
-
-
-def pip_install(packages):
-    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q'] + packages, check=False)
-
-
-pip_install(['requests', 'ipywidgets', 'Pillow', 'xvfbwrapper', 'ipyevents'])
-
-import requests
-
-OWNER = 'amerameryou1-blip'
-REPO = 'Wjsjsjsj'
-BRANCH = 'main'
-PREFIX = ''
-BUNDLE_FILES = [
-    'browser_controller_main.py',
-    'browser_controller_support.py',
-]
-
-
-def state_root():
-    kaggle_root = '/kaggle/working'
-    if os.path.isdir(kaggle_root):
-        return os.path.join(kaggle_root, 'browser_controller_state')
-    return '/tmp/browser_controller_state'
-
-
-def bundle_dir():
-    path_value = os.path.join(state_root(), 'bundle-cache')
-    os.makedirs(path_value, exist_ok=True)
-    return path_value
-
-
-def build_raw_url(owner_value, repo_value, branch_value, path_value):
-    return 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + path_value
-
-
-def fetch_text(url_value):
-    response = requests.get(url_value, timeout=60)
-    response.raise_for_status()
-    return response.text
-
-
-def ensure_system_tools():
-    os.environ['DEBIAN_FRONTEND'] = 'noninteractive'
-    os.environ['DISPLAY'] = ':99'
-    os.environ['XDG_RUNTIME_DIR'] = os.path.join(state_root(), 'runtime')
-    os.makedirs(os.environ['XDG_RUNTIME_DIR'], exist_ok=True)
-    os.makedirs(os.path.join(state_root(), 'downloads'), exist_ok=True)
-    os.makedirs(os.path.join(state_root(), 'chrome-profile'), exist_ok=True)
-
-    packages = [
-        'xvfb', 'xdotool', 'scrot', 'imagemagick', 'wget', 'curl', 'ca-certificates', 'fonts-liberation',
-        'libatk1.0-0', 'libatk-bridge2.0-0', 'libatspi2.0-0', 'libvulkan1', 'libxcomposite1',
-        'libxdamage1', 'libxrandr2', 'libgbm1', 'libasound2', 'libpangocairo-1.0-0',
-        'libpango-1.0-0', 'libgtk-3-0', 'libnss3', 'libxshmfence1', 'xdg-utils'
-    ]
-
-    need_install = False
-    for tool_name in ['Xvfb', 'xdotool', 'scrot']:
-        if shutil.which(tool_name) is None:
-            need_install = True
-            break
-
-    browser_found = False
-    for browser_name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
-        if shutil.which(browser_name) is not None:
-            browser_found = True
-            break
-
-    if not browser_found:
-        need_install = True
-
-    if need_install:
-        subprocess.run('apt-get update -y', shell=True, check=False)
-        subprocess.run('apt-get install -y ' + ' '.join(packages), shell=True, check=False)
-        browser_found = False
-        for browser_name in ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']:
-            if shutil.which(browser_name) is not None:
-                browser_found = True
-                break
-        if not browser_found:
-            subprocess.run('wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb', shell=True, check=False)
-            subprocess.run('apt-get install -y /tmp/chrome.deb || true', shell=True, check=False)
-            subprocess.run('apt-get -f install -y || true', shell=True, check=False)
-            subprocess.run('apt-get install -y /tmp/chrome.deb || true', shell=True, check=False)
-            if shutil.which('google-chrome') is None and shutil.which('google-chrome-stable') is None:
-                subprocess.run('apt-get install -y chromium-browser || apt-get install -y chromium || true', shell=True, check=False)
-
-
-def fetch_bundle():
-    cached_paths = {}
-    for file_name in BUNDLE_FILES:
-        repo_path = (PREFIX.strip('/') + '/' + file_name).strip('/')
-        local_path = os.path.join(bundle_dir(), file_name)
-        url_value = build_raw_url(OWNER, REPO, BRANCH, repo_path)
-        print('Fetching:', url_value)
-        text_value = fetch_text(url_value)
-        compile(text_value, file_name, 'exec')
-        with open(local_path, 'w', encoding='utf-8') as handle:
-            handle.write(text_value)
-        cached_paths[file_name] = local_path
-    return cached_paths
-
-
-def load_cached_bundle():
-    cached_paths = {}
-    for file_name in BUNDLE_FILES:
-        local_path = os.path.join(bundle_dir(), file_name)
-        if not os.path.exists(local_path):
-            return None
-        cached_paths[file_name] = local_path
-    return cached_paths
-
-
-def load_bundle_with_fallback():
-    try:
-        return fetch_bundle()
-    except Exception as exc:
-        print('Fetch failed:', str(exc))
-        cached = load_cached_bundle()
-        if cached:
-            print('Using cached bundle from previous run.')
-            return cached
-        raise
-
-
-def execute_bundle(paths_map):
-    support_path = paths_map['browser_controller_support.py']
-    main_path = paths_map['browser_controller_main.py']
-
-    support_ns = {'__name__': 'browser_controller_support'}
-    support_code = open(support_path, 'r', encoding='utf-8').read()
-    exec(compile(support_code, support_path, 'exec'), support_ns)
-
-    main_ns = {
-        '__name__': '__main__',
-        '__browser_support__': support_ns,
-        '__browser_bundle_paths__': paths_map,
-    }
-    main_code = open(main_path, 'r', encoding='utf-8').read()
-    exec(compile(main_code, main_path, 'exec'), main_ns)
-
-
-def main():
-    ensure_system_tools()
-    paths_map = load_bundle_with_fallback()
-    execute_bundle(paths_map)
-
-
-if __name__ == '__main__':
-    main()
-```
-
-## Notes
-- The recommended runtime path is the two-file Python bundle (`browser_controller_main.py` + `browser_controller_support.py`).
-- The website can upload these files directly to GitHub using a pasted token; no Kaggle-side GitHub upload is required.
+- Combined: https://github.com/amerameryou1-blip/Wjsjsjsj/blob/main/browser_controller_full.py
