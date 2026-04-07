@@ -9,7 +9,6 @@ if not SUPPORT:
 
 import os
 import json
-import traceback
 
 import requests
 import ipywidgets as widgets
@@ -20,19 +19,14 @@ DEFAULT_REPO = SUPPORT['DEFAULT_REPO']
 DEFAULT_BRANCH = SUPPORT['DEFAULT_BRANCH']
 DEFAULT_PREFIX = SUPPORT['DEFAULT_PREFIX']
 DEFAULT_README_PATH = SUPPORT['DEFAULT_README_PATH']
-DEFAULT_SUPPORT_PATH = SUPPORT['DEFAULT_SUPPORT_PATH']
-DEFAULT_MAIN_PATH = SUPPORT['DEFAULT_MAIN_PATH']
-DEFAULT_FULL_PATH = SUPPORT['DEFAULT_FULL_PATH']
 DEFAULT_LAUNCHER_PATH = SUPPORT['DEFAULT_LAUNCHER_PATH']
 BUNDLE_FILE_ORDER = SUPPORT['BUNDLE_FILE_ORDER']
 GOOGLE_HOME_URL = SUPPORT['GOOGLE_HOME_URL']
-ANTIGRAVITY_HOME_URL = SUPPORT['ANTIGRAVITY_HOME_URL']
 ANTIGRAVITY_DOWNLOAD_URL = SUPPORT['ANTIGRAVITY_DOWNLOAD_URL']
 ANTIGRAVITY_DEB_COMMANDS = SUPPORT['ANTIGRAVITY_DEB_COMMANDS']
 ANTIGRAVITY_RPM_COMMANDS = SUPPORT['ANTIGRAVITY_RPM_COMMANDS']
 ensure_state_dirs = SUPPORT['ensure_state_dirs']
 file_read_text = SUPPORT['file_read_text']
-file_write_text = SUPPORT['file_write_text']
 load_json = SUPPORT['load_json']
 save_json = SUPPORT['save_json']
 repo_path = SUPPORT['repo_path']
@@ -40,9 +34,6 @@ fetch_bundle_files = SUPPORT['fetch_bundle_files']
 load_bundle_from_directory = SUPPORT['load_bundle_from_directory']
 merge_bundle_maps = SUPPORT['merge_bundle_maps']
 bundle_summary_lines = SUPPORT['bundle_summary_lines']
-github_validate_token = SUPPORT['github_validate_token']
-github_repo_info = SUPPORT['github_repo_info']
-github_upload_bundle = SUPPORT['github_upload_bundle']
 html_card = SUPPORT['html_card']
 html_code_block = SUPPORT['html_code_block']
 build_readme_text = SUPPORT['build_readme_text']
@@ -50,18 +41,7 @@ now_text = SUPPORT['now_text']
 
 STATE = ensure_state_dirs()
 CONFIG_PATH = STATE['config_path']
-LOG_PATH = STATE['log_path']
 BUNDLE_PATHS = globals().get('__browser_bundle_paths__', {})
-
-
-def log_line(text_value):
-    line = '[' + now_text() + '] ' + str(text_value)
-    print(line)
-    try:
-        with open(LOG_PATH, 'a', encoding='utf-8') as handle:
-            handle.write(line + '\n')
-    except Exception:
-        pass
 
 
 def open_url(url_value):
@@ -85,31 +65,71 @@ def load_initial_bundle():
     return merge_bundle_maps(from_cwd, from_cache, from_paths)
 
 
+def render_screen_html(pointer, action_text, linux_target):
+    left = max(0, min(100, int(pointer['x'])))
+    top = max(0, min(100, int(pointer['y'])))
+    distro_label = 'Debian / Ubuntu' if linux_target == 'deb' else 'Fedora / RHEL / SUSE'
+    return (
+        '<div style="margin-top:12px;border:1px solid rgba(255,255,255,0.12);border-radius:24px;overflow:hidden;background:#020617;color:#fff;">'
+        '<div style="padding:12px 16px;background:rgba(255,255,255,0.05);border-bottom:1px solid rgba(255,255,255,0.08);font-size:12px;color:#cbd5e1;">live-control-screen</div>'
+        '<div style="padding:18px;">'
+        '<div style="padding:14px 16px;border:1px solid rgba(255,255,255,0.08);border-radius:18px;background:rgba(255,255,255,0.05);">'
+        '<div style="font-size:13px;color:#67e8f9;text-transform:uppercase;letter-spacing:.16em;">Visible screen</div>'
+        '<div style="font-size:16px;margin-top:8px;color:#e2e8f0;">This is the simple interface running inside Kaggle.</div>'
+        '</div>'
+        '<div style="position:relative;margin-top:16px;height:320px;border-radius:22px;overflow:hidden;border:1px solid rgba(255,255,255,0.1);background:linear-gradient(135deg, rgba(8,47,73,.7), rgba(15,23,42,.98));">'
+        '<div style="position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px),linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px);background-size:34px 34px;"></div>'
+        '<div style="position:relative;z-index:1;padding:18px;height:100%;display:flex;flex-direction:column;justify-content:space-between;">'
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">'
+        '<div style="padding:14px;border-radius:18px;background:rgba(2,6,23,.62);border:1px solid rgba(255,255,255,.08);">'
+        '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.16em;color:#94a3b8;">Last action</div>'
+        '<div style="margin-top:8px;font-size:18px;font-weight:800;">' + str(action_text) + '</div>'
+        '</div>'
+        '<div style="padding:14px;border-radius:18px;background:rgba(2,6,23,.62);border:1px solid rgba(255,255,255,.08);">'
+        '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.16em;color:#94a3b8;">Linux</div>'
+        '<div style="margin-top:8px;font-size:18px;font-weight:800;">' + distro_label + '</div>'
+        '</div>'
+        '</div>'
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">'
+        '<div style="padding:12px;border-radius:18px;background:rgba(255,255,255,.08);text-align:center;">Google</div>'
+        '<div style="padding:12px;border-radius:18px;background:rgba(255,255,255,.08);text-align:center;">Kaggle</div>'
+        '<div style="padding:12px;border-radius:18px;background:rgba(255,255,255,.08);text-align:center;">Antigravity</div>'
+        '</div>'
+        '<div style="position:absolute;width:18px;height:18px;border-radius:999px;background:#22d3ee;border:2px solid #fff;box-shadow:0 0 24px rgba(34,211,238,.95);left:calc(' + str(left) + '% - 9px);top:calc(' + str(top) + '% - 9px);"></div>'
+        '</div>'
+        '</div>'
+        '</div>'
+    )
+
+
 def launch_dashboard():
     bundle_store = load_initial_bundle()
     saved = load_json(CONFIG_PATH, {})
-    pointer = {'x': 50, 'y': 50}
-    action_log = []
+    pointer = {
+        'x': int(saved.get('pointer_x', 42) or 42),
+        'y': int(saved.get('pointer_y', 45) or 45),
+    }
+    linux_target = {'value': str(saved.get('linux_target') or 'deb')}
+    actions = ['Dashboard ready.']
 
-    owner_input = widgets.Text(value=str(saved.get('owner') or DEFAULT_OWNER), description='Owner', layout=widgets.Layout(width='260px'))
-    repo_input = widgets.Text(value=str(saved.get('repo') or DEFAULT_REPO), description='Repo', layout=widgets.Layout(width='260px'))
-    branch_input = widgets.Text(value=str(saved.get('branch') or DEFAULT_BRANCH), description='Branch', layout=widgets.Layout(width='220px'))
-    prefix_input = widgets.Text(value=str(saved.get('prefix') or DEFAULT_PREFIX), description='Prefix', layout=widgets.Layout(width='260px'))
-    token_input = widgets.Password(value='', description='GitHub key', placeholder='Paste token here', layout=widgets.Layout(width='540px'))
-    commit_input = widgets.Text(value=str(saved.get('commit_message') or 'Upload simple Linux controller bundle'), description='Commit', layout=widgets.Layout(width='540px'))
-    google_query_input = widgets.Text(value='google antigravity linux', description='Google', layout=widgets.Layout(width='540px'))
-    linux_selector = widgets.ToggleButtons(
+    intro_html = widgets.HTML()
+    status_html = widgets.HTML()
+    screen_html = widgets.HTML()
+    files_html = widgets.HTML()
+    linux_html = widgets.HTML()
+    log_html = widgets.HTML()
+
+    refetch_button = widgets.Button(description='Refetch bundle', button_style='info', layout=widgets.Layout(width='180px'))
+    google_button = widgets.Button(description='Open Google', layout=widgets.Layout(width='160px'))
+    kaggle_button = widgets.Button(description='Open Kaggle', layout=widgets.Layout(width='160px'))
+    antigravity_button = widgets.Button(description='Open Antigravity', layout=widgets.Layout(width='180px'))
+
+    distro_buttons = widgets.ToggleButtons(
         options=[('Debian / Ubuntu', 'deb'), ('Fedora / RHEL / SUSE', 'rpm')],
-        value=str(saved.get('linux_target') or 'deb'),
+        value=linux_target['value'],
         description='Linux',
         layout=widgets.Layout(width='520px'),
     )
-
-    validate_button = widgets.Button(description='Validate key', button_style='info', icon='check')
-    upload_button = widgets.Button(description='Upload bundle to GitHub', button_style='success', icon='upload')
-    refetch_button = widgets.Button(description='Refetch repo files', button_style='primary', icon='refresh')
-    google_button = widgets.Button(description='Open Google', button_style='', icon='globe')
-    antigravity_button = widgets.Button(description='Open Antigravity', button_style='', icon='rocket')
 
     up_button = widgets.Button(description='↑', layout=widgets.Layout(width='64px'))
     left_button = widgets.Button(description='←', layout=widgets.Layout(width='64px'))
@@ -122,238 +142,128 @@ def launch_dashboard():
     scroll_down_button = widgets.Button(description='Scroll down', layout=widgets.Layout(width='110px'))
 
     available_files = [name for name in BUNDLE_FILE_ORDER if name in bundle_store] or BUNDLE_FILE_ORDER[:]
-    selected_file = DEFAULT_LAUNCHER_PATH if DEFAULT_LAUNCHER_PATH in available_files else available_files[0]
-    file_selector = widgets.Dropdown(options=available_files, value=selected_file, description='File', layout=widgets.Layout(width='360px'))
-    file_preview = widgets.Textarea(
-        value=bundle_store.get(selected_file, {}).get('content', ''),
-        layout=widgets.Layout(width='100%', height='420px'),
-    )
-
-    intro_html = widgets.HTML()
-    status_html = widgets.HTML()
-    files_html = widgets.HTML()
-    mouse_html = widgets.HTML()
-    log_html = widgets.HTML()
-    linux_html = widgets.HTML()
-    links_html = widgets.HTML()
-
-    current_name = {'value': selected_file}
+    selected_file = {'value': DEFAULT_LAUNCHER_PATH if DEFAULT_LAUNCHER_PATH in available_files else available_files[0]}
+    file_selector = widgets.Dropdown(options=available_files, value=selected_file['value'], description='File', layout=widgets.Layout(width='360px'))
+    file_preview = widgets.Textarea(value=bundle_store.get(selected_file['value'], {}).get('content', ''), layout=widgets.Layout(width='100%', height='420px'))
 
     def save_settings():
         save_json(CONFIG_PATH, {
-            'owner': owner_input.value.strip(),
-            'repo': repo_input.value.strip(),
-            'branch': branch_input.value.strip(),
-            'prefix': prefix_input.value.strip(),
-            'commit_message': commit_input.value.strip(),
-            'linux_target': linux_selector.value,
+            'pointer_x': pointer['x'],
+            'pointer_y': pointer['y'],
+            'linux_target': linux_target['value'],
         })
 
-    def set_status(title_text, lines, accent='#22c55e'):
+    def set_status(title_text, lines, accent='#22d3ee'):
         status_html.value = html_card(title_text, lines, accent)
-        log_line(title_text + ' | ' + ' | '.join(str(line) for line in lines))
+
+    def add_action(text_value):
+        actions.append(now_text() + ' - ' + str(text_value))
+        refresh_log()
+        refresh_screen()
+        save_settings()
 
     def refresh_intro():
-        owner_value = owner_input.value.strip() or DEFAULT_OWNER
-        repo_value = repo_input.value.strip() or DEFAULT_REPO
-        branch_value = branch_input.value.strip() or DEFAULT_BRANCH
-        prefix_value = prefix_input.value.strip()
-        launcher_path = repo_path(prefix_value, DEFAULT_LAUNCHER_PATH)
-        launcher_url = 'https://raw.githubusercontent.com/' + owner_value + '/' + repo_value + '/' + branch_value + '/' + launcher_path
-        intro_html.value = html_card('Simple flow', [
-            '1. Paste your GitHub key.',
-            '2. Click Upload bundle to GitHub.',
-            '3. Copy kaggle_launcher.py from the website.',
-            '4. Paste it into one Kaggle cell and run it.',
-            'Launcher raw URL: ' + launcher_url,
-        ], '#38bdf8')
+        launcher_url = 'https://raw.githubusercontent.com/' + DEFAULT_OWNER + '/' + DEFAULT_REPO + '/' + DEFAULT_BRANCH + '/' + repo_path(DEFAULT_PREFIX, DEFAULT_LAUNCHER_PATH)
+        intro_html.value = html_card('Simple Kaggle flow', [
+            'The website uploads the bundle for you.',
+            'This dashboard is what opens after you paste the launcher into Kaggle.',
+            'Launcher URL: ' + launcher_url,
+        ], '#67e8f9')
 
-    def refresh_files_html():
-        files_html.value = html_card('Loaded files', bundle_summary_lines(bundle_store), '#8b5cf6')
+    def refresh_files():
+        files_html.value = html_card('Loaded bundle files', bundle_summary_lines(bundle_store), '#a78bfa')
 
-    def refresh_linux_html():
-        command_text = ANTIGRAVITY_DEB_COMMANDS if linux_selector.value == 'deb' else ANTIGRAVITY_RPM_COMMANDS
-        linux_html.value = html_card('Linux install commands', [
-            'Use the commands below on Linux.',
-            'Debian/Ubuntu = deb.',
-            'Fedora/RHEL/SUSE = rpm.',
+    def refresh_linux():
+        command_text = ANTIGRAVITY_DEB_COMMANDS if linux_target['value'] == 'deb' else ANTIGRAVITY_RPM_COMMANDS
+        linux_html.value = html_card('Linux commands', [
+            'Use these commands on Linux when you need Antigravity.',
             'Official page: ' + ANTIGRAVITY_DOWNLOAD_URL,
         ], '#f59e0b') + html_code_block(command_text)
 
-    def refresh_mouse_html():
-        mouse_html.value = html_card('Mouse control pad', [
-            'Pointer X: ' + str(pointer['x']),
-            'Pointer Y: ' + str(pointer['y']),
-            'Use the arrows and click buttons below.',
-        ], '#06b6d4')
+    def refresh_screen():
+        screen_html.value = render_screen_html(pointer, actions[-1], linux_target['value'])
 
-    def refresh_log_html():
-        if not action_log:
-            lines = ['No control actions yet.']
-        else:
-            lines = action_log[-10:][::-1]
-        log_html.value = html_card('Action log', lines, '#14b8a6')
-
-    def refresh_links_html(message='Quick links are here for Google and Antigravity.'):
-        links_html.value = html_card('Quick links', [
-            message,
-            'Google: ' + GOOGLE_HOME_URL,
-            'Antigravity: ' + ANTIGRAVITY_DOWNLOAD_URL,
-        ], '#f97316')
-
-    def ensure_current_file_saved():
-        name = current_name['value']
-        if not name:
-            return
-        if name not in bundle_store:
-            bundle_store[name] = {
-                'name': name,
-                'repo_path': name,
-                'url': '',
-                'local_path': os.path.join(STATE['bundle_dir'], name),
-                'content': '',
-            }
-        bundle_store[name]['content'] = file_preview.value
-        local_path = bundle_store[name].get('local_path') or os.path.join(STATE['bundle_dir'], name)
-        bundle_store[name]['local_path'] = local_path
-        file_write_text(local_path, file_preview.value)
+    def refresh_log():
+        log_html.value = html_card('Recent actions', actions[-8:][::-1], '#34d399')
 
     def select_file(name):
-        current_name['value'] = name
+        selected_file['value'] = name
         file_preview.value = bundle_store.get(name, {}).get('content', '')
 
     def update_file_options():
         options = [name for name in BUNDLE_FILE_ORDER if name in bundle_store] or BUNDLE_FILE_ORDER[:]
         file_selector.options = options
-        if current_name['value'] not in options:
-            current_name['value'] = options[0]
-        file_selector.value = current_name['value']
+        if selected_file['value'] not in options:
+            selected_file['value'] = options[0]
+        file_selector.value = selected_file['value']
 
-    def add_action(text_value):
-        action_log.append(now_text() + ' - ' + str(text_value))
-        refresh_log_html()
-
-    def move_pointer(dx, dy, action_name):
+    def move_pointer(dx, dy, label):
         pointer['x'] = max(0, min(100, pointer['x'] + dx))
         pointer['y'] = max(0, min(100, pointer['y'] + dy))
-        add_action(action_name + ' -> (' + str(pointer['x']) + ', ' + str(pointer['y']) + ')')
-        refresh_mouse_html()
-
-    def collect_bundle_for_upload():
-        ensure_current_file_saved()
-        owner_value = owner_input.value.strip() or DEFAULT_OWNER
-        repo_value = repo_input.value.strip() or DEFAULT_REPO
-        branch_value = branch_input.value.strip() or DEFAULT_BRANCH
-        prefix_value = prefix_input.value.strip()
-        if DEFAULT_README_PATH not in bundle_store or not bundle_store[DEFAULT_README_PATH].get('content', '').strip():
-            readme_text = build_readme_text(owner_value, repo_value, branch_value, prefix_value)
-            readme_path = os.path.join(STATE['bundle_dir'], DEFAULT_README_PATH)
-            file_write_text(readme_path, readme_text)
-            bundle_store[DEFAULT_README_PATH] = {
-                'name': DEFAULT_README_PATH,
-                'repo_path': repo_path(prefix_value, DEFAULT_README_PATH),
-                'url': '',
-                'local_path': readme_path,
-                'content': readme_text,
-            }
-        return bundle_store
-
-    def handle_validate(_):
-        token_value = token_input.value.strip()
-        if not token_value:
-            set_status('Missing GitHub key', ['Paste your GitHub key first.'], '#ef4444')
-            return
-        save_settings()
-        try:
-            user_data = github_validate_token(requests, token_value)
-            repo_data = github_repo_info(requests, token_value, owner_input.value.strip() or DEFAULT_OWNER, repo_input.value.strip() or DEFAULT_REPO)
-            set_status('GitHub key works', [
-                'User: ' + (user_data.get('login') or '(unknown)'),
-                'Repo: ' + repo_data.get('full_name', ''),
-                'Push access: ' + ('yes' if repo_data.get('can_push') else 'no'),
-            ], '#22c55e')
-        except Exception as exc:
-            set_status('Validation failed', [str(exc)], '#ef4444')
-
-    def handle_upload(_):
-        token_value = token_input.value.strip()
-        if not token_value:
-            set_status('Missing GitHub key', ['Paste your GitHub key first.'], '#ef4444')
-            return
-        save_settings()
-        try:
-            bundle_map = collect_bundle_for_upload()
-            results = github_upload_bundle(
-                requests,
-                token_value,
-                owner_input.value.strip() or DEFAULT_OWNER,
-                repo_input.value.strip() or DEFAULT_REPO,
-                branch_input.value.strip() or DEFAULT_BRANCH,
-                prefix_input.value.strip(),
-                bundle_map,
-                commit_input.value.strip() or 'Upload simple Linux controller bundle',
-            )
-            refresh_files_html()
-            set_status('Upload complete', [
-                'Uploaded ' + str(len(results)) + ' files.',
-                'Next: copy kaggle_launcher.py from the website and run it in Kaggle.',
-            ], '#22c55e')
-        except Exception as exc:
-            set_status('Upload failed', [str(exc)], '#ef4444')
-            traceback.print_exc()
+        add_action(label + ' -> (' + str(pointer['x']) + ', ' + str(pointer['y']) + ')')
 
     def handle_refetch(_):
-        save_settings()
         try:
             fetched = fetch_bundle_files(
                 requests,
-                owner_input.value.strip() or DEFAULT_OWNER,
-                repo_input.value.strip() or DEFAULT_REPO,
-                branch_input.value.strip() or DEFAULT_BRANCH,
-                prefix_input.value.strip(),
+                DEFAULT_OWNER,
+                DEFAULT_REPO,
+                DEFAULT_BRANCH,
+                DEFAULT_PREFIX,
                 BUNDLE_FILE_ORDER,
                 STATE['bundle_dir'],
             )
             for key, value in fetched.items():
                 bundle_store[key] = value
+            if DEFAULT_README_PATH not in bundle_store:
+                bundle_store[DEFAULT_README_PATH] = {
+                    'name': DEFAULT_README_PATH,
+                    'repo_path': DEFAULT_README_PATH,
+                    'url': '',
+                    'local_path': os.path.join(STATE['bundle_dir'], DEFAULT_README_PATH),
+                    'content': build_readme_text(DEFAULT_OWNER, DEFAULT_REPO, DEFAULT_BRANCH, DEFAULT_PREFIX),
+                }
             update_file_options()
             select_file(file_selector.value)
-            refresh_files_html()
-            set_status('Refetch complete', ['Bundle files were fetched from the repository again.'], '#22c55e')
+            refresh_files()
+            set_status('Bundle refreshed', ['Latest files downloaded from GitHub.'], '#22c55e')
+            add_action('Bundle refreshed from GitHub')
         except Exception as exc:
             set_status('Refetch failed', [str(exc)], '#ef4444')
 
     def handle_google(_):
-        query_value = google_query_input.value.strip()
-        if query_value:
-            url_value = GOOGLE_HOME_URL + 'search?q=' + requests.utils.quote(query_value)
-        else:
-            url_value = GOOGLE_HOME_URL
-        open_url(url_value)
-        refresh_links_html('Google button opened a new tab.')
+        open_url(GOOGLE_HOME_URL)
         add_action('Opened Google')
+
+    def handle_kaggle(_):
+        open_url('https://www.kaggle.com/code')
+        add_action('Opened Kaggle')
 
     def handle_antigravity(_):
         open_url(ANTIGRAVITY_DOWNLOAD_URL)
-        refresh_links_html('Antigravity button opened a new tab.')
-        add_action('Opened Antigravity Linux page')
+        add_action('Opened Antigravity')
 
-    def handle_file_change(change):
-        if change.get('name') != 'value':
-            return
-        ensure_current_file_saved()
-        select_file(change['new'])
+    def handle_distro(change):
+        linux_target['value'] = change['new']
+        refresh_linux()
+        refresh_screen()
+        save_settings()
 
-    file_selector.observe(handle_file_change, names='value')
-    validate_button.on_click(handle_validate)
-    upload_button.on_click(handle_upload)
+    def handle_file_select(change):
+        if change['name'] == 'value' and change['new']:
+            select_file(change['new'])
+
     refetch_button.on_click(handle_refetch)
     google_button.on_click(handle_google)
+    kaggle_button.on_click(handle_kaggle)
     antigravity_button.on_click(handle_antigravity)
-    up_button.on_click(lambda _: move_pointer(0, -8, 'Move up'))
-    left_button.on_click(lambda _: move_pointer(-8, 0, 'Move left'))
-    right_button.on_click(lambda _: move_pointer(8, 0, 'Move right'))
-    down_button.on_click(lambda _: move_pointer(0, 8, 'Move down'))
+    distro_buttons.observe(handle_distro, names='value')
+    file_selector.observe(handle_file_select, names='value')
+
+    up_button.on_click(lambda _: move_pointer(0, -5, 'Pointer up'))
+    left_button.on_click(lambda _: move_pointer(-5, 0, 'Pointer left'))
+    right_button.on_click(lambda _: move_pointer(5, 0, 'Pointer right'))
+    down_button.on_click(lambda _: move_pointer(0, 5, 'Pointer down'))
     left_click_button.on_click(lambda _: add_action('Left click'))
     right_click_button.on_click(lambda _: add_action('Right click'))
     double_click_button.on_click(lambda _: add_action('Double click'))
@@ -361,38 +271,32 @@ def launch_dashboard():
     scroll_down_button.on_click(lambda _: add_action('Scroll down'))
 
     refresh_intro()
-    refresh_files_html()
-    refresh_linux_html()
-    refresh_mouse_html()
-    refresh_log_html()
-    refresh_links_html()
-    set_status('Dashboard ready', [
-        'This is the simple Kaggle interface.',
-        'Paste your GitHub key, upload, then use the launcher.',
-    ], '#22c55e')
+    refresh_files()
+    refresh_linux()
+    refresh_screen()
+    refresh_log()
+    set_status('Dashboard ready', ['Visible screen loaded.', 'Use the buttons below to move the pointer or open quick links.'], '#22c55e')
 
-    root = widgets.VBox([
+    controls_row_1 = widgets.HBox([refetch_button, google_button, kaggle_button, antigravity_button])
+    pointer_row_1 = widgets.HBox([widgets.HTML('<div style="width:64px"></div>'), up_button, widgets.HTML('<div style="width:64px"></div>')])
+    pointer_row_2 = widgets.HBox([left_button, down_button, right_button])
+    click_row = widgets.HBox([left_click_button, right_click_button, double_click_button, scroll_up_button, scroll_down_button])
+
+    display(widgets.VBox([
         intro_html,
         status_html,
-        widgets.HBox([owner_input, repo_input, branch_input, prefix_input]),
-        token_input,
-        commit_input,
-        widgets.HBox([validate_button, upload_button, refetch_button]),
-        google_query_input,
-        widgets.HBox([google_button, antigravity_button]),
-        linux_selector,
+        screen_html,
+        controls_row_1,
+        distro_buttons,
         linux_html,
-        widgets.HBox([widgets.Label('Mouse pad:'), up_button, left_button, right_button, down_button]),
-        widgets.HBox([left_click_button, right_click_button, double_click_button, scroll_up_button, scroll_down_button]),
-        mouse_html,
+        pointer_row_1,
+        pointer_row_2,
+        click_row,
         log_html,
-        links_html,
         files_html,
-        file_selector,
+        widgets.HBox([file_selector]),
         file_preview,
-    ], layout=widgets.Layout(width='100%'))
-
-    display(root)
+    ]))
 
 
 if __name__ == '__main__':
