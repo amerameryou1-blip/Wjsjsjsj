@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""Install the Kaggle runtime stack for Gemma 4 GGUF on dual T4 GPUs.
+
+This script:
+1. Ensures the required Python packages are installed.
+2. Builds `llama-cpp-python` from source with CUDA enabled.
+3. Builds the standalone `llama-server` binary from `ggml-org/llama.cpp`
+   because the requested multi-GPU flags are exposed by the C++ server.
+"""
+
+from __future__ import annotations
+
+import importlib
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+WORKDIR = Path("/kaggle/working")
+CACHE_DIR = WORKDIR / ".cache"
+PIP_CACHE_DIR = CACHE_DIR / "pip"
+BIN_DIR = WORKDIR / "bin"
+LLAMA_CPP_DIR = WORKDIR / "llama.cpp"
+LLAMA_CPP_BUILD_DIR = LLAMA_CPP_DIR / "build"
+SERVER_HINT_FILE = WORKDIR / "llama-server-path.txt"
+CUDA_NVCC = Path("/usr/local/cuda/bin/nvcc")
+INPUT_ROOT = Path("/kaggle/input")
+
+
+def run_command(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
+    """Run a subprocess with clear logging."""
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update(env)
+
+    pretty_command = " ".join(command)
+    print(f"\n[RUN] {pretty_command}")
+    subprocess.run(command, check=True, cwd=str(cwd) if cwd else None, env=merged_env)
+
+
+def bootstrap_build_tools() -> None:
+    """Install the basic packaging and build utilities first."""
+    run_command(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "pip",
+            "setuptools",
+            "wheel",
+            "packaging",
+            "cmake",
+            "ninja",
+            "scikit-build-core",
+        ]
+    )
+
+
+def get_installed_version(package_name: str) -> str | None:
+    """Return an installed package version, or None if the package is missing."""
+    try:
+        metadata = importlib.import_module("importlib.metadata")
+    except ImportError:
+        metadata = importlib.import_module("importlib_metadata")
+
+    try:
+        return metadata.version(package_name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def ensure_python_package(
+    spec: str,
+    package_name: str,
+    minimum_version: str | None = None,
+    *,
+    required: bool = True,
+    extra_args: list[str] | None = None,
+) -> None:
+    """Install a package only when it is missing or below the required minimum."""
+    if minimum_version:
+        from packaging.version import Version
+
+        installed = get_installed_version(package_name)
+        if installed is not None and Version(installed) >= Version(minimum_version):
+            print(f"[OK] {package_name} {installed} already satisfies >= {minimum_version}")
+            return
+    else:
+        installed = get_installed_version(package_name)
+        if installed is not None:
+            print(f"[OK] {package_name} {installed} is already installed")
+            return
+
+    print(f"[INSTALL] {spec}")
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+    ]
+    if extra_args:
+        command.extend(extra_args)
+    command.append(spec)
+
+    try:
+        run_command(command)
+    except Exception:
+        if required:
+            raise
+        print(f"[WARN] Optional package install failed and will be skipped: {spec}")
+
+
+def install_required_python_packages() -> None:
+    """Install the requested Python stack in a stable order."""
+    ensure_python_package(
+        "transformers>=5.5.0",
+        "transformers",
+        minimum_version="5.5.0",
+        extra_args=["--pre"],
+    )
+    ensure_python_package("torch", "torch")
+    ensure_python_package("accelerate", "accelerate")
+    # bitsandbytes is not needed for the GGUF + llama.cpp path, so we do not let
+    # it kill the entire Kaggle setup if PyPI/build compatibility changes.
+    ensure_python_package("bitsandbytes", "bitsandbytes", required=False)
+    ensure_python_package("pillow", "Pillow")
+    ensure_python_package("timm", "timm")
+    ensure_python_package("hf_transfer", "hf_transfer")
+    ensure_python_package("huggingface_hub", "huggingface-hub")
+    ensure_python_package("requests", "requests")
+    # Gemma processors commonly rely on SentencePiece, so we install it explicitly
+    # even though it was not part of the minimum list.
+    ensure_python_package("sentencepiece", "sentencepiece")
+
+
+def install_llama_cpp_server_dependencies() -> None:
+    """Install the Python-side web server extras used by llama_cpp.server."""
+    ensure_python_package("uvicorn>=0.22.0", "uvicorn")
+    ensure_python_package("fastapi>=0.100.0", "fastapi")
+    ensure_python_package("pydantic-settings>=2.0.1", "pydantic-settings")
+    ensure_python_package("sse-starlette>=1.6.1", "sse-starlette")
+    ensure_python_package("starlette-context>=0.3.6,<0.4", "starlette-context")
+    ensure_python_package("PyYAML>=5.1", "PyYAML")
+
+
+def build_llama_cpp_python() -> None:
+    """Build llama-cpp-python from source with CUDA support enabled."""
+    if get_installed_version("llama-cpp-python") is not None:
+        print("[OK] llama-cpp-python is already installed; skipping rebuild.")
+        return
+
+    env = {
+        "CMAKE_ARGS": "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=75",
+        "FORCE_CMAKE": "1",
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        "PIP_CACHE_DIR": str(PIP_CACHE_DIR),
+    }
+    if CUDA_NVCC.exists():
+        env["CUDACXX"] = str(CUDA_NVCC)
+
+    install_commands = [
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--force-reinstall",
+            "--no-build-isolation",
+            "--no-binary=llama-cpp-python",
+            "llama-cpp-python[server]",
+        ],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--force-reinstall",
+            "--no-build-isolation",
+            "--no-binary=llama-cpp-python",
+            "llama-cpp-python",
+        ],
+    ]
+
+    last_error: Exception | None = None
+    for command in install_commands:
+        try:
+            run_command(command, env=env)
+            print("[OK] llama-cpp-python installed successfully.")
+            return
+        except Exception as exc:
+            last_error = exc
+            print(f"[WARN] llama-cpp-python install attempt failed: {exc}")
+
+    raise RuntimeError(
+        "Failed to install llama-cpp-python with CUDA support. "
+        f"Last error: {last_error}"
+    )
+
+
+def ensure_llama_cpp_checkout() -> None:
+    """Clone llama.cpp once so we can build the standalone llama-server binary."""
+    if LLAMA_CPP_DIR.exists():
+        print(f"[OK] Reusing existing llama.cpp checkout at {LLAMA_CPP_DIR}")
+        return
+
+    run_command(
+        [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "https://github.com/ggml-org/llama.cpp.git",
+            str(LLAMA_CPP_DIR),
+        ]
+    )
+
+
+def link_or_copy(source: Path, destination: Path) -> Path:
+    """Link a file into the working directory, or copy if symlinks fail."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        return destination
+
+    try:
+        destination.symlink_to(source)
+        print(f"[OK] Symlinked {source} -> {destination}")
+    except OSError:
+        shutil.copy2(source, destination)
+        print(f"[OK] Copied {source} -> {destination}")
+    return destination
+
+
+def find_cached_llama_server() -> Path | None:
+    """Look for a previously saved llama-server binary in Kaggle inputs."""
+    if not INPUT_ROOT.exists():
+        return None
+
+    patterns = [
+        "*/bin/llama-server",
+        "*/llama-server",
+        "*/llama.cpp/build/bin/llama-server",
+        "*/llama.cpp/build/bin/Release/llama-server",
+    ]
+    for pattern in patterns:
+        for candidate in INPUT_ROOT.glob(pattern):
+            if candidate.exists():
+                print(f"[OK] Found cached llama-server in attached input: {candidate}")
+                return candidate
+    return None
+
+
+def restore_cached_llama_server() -> Path | None:
+    """Restore a cached llama-server binary into /kaggle/working/bin if available."""
+    hinted_path = None
+    if SERVER_HINT_FILE.exists():
+        hinted_path = Path(SERVER_HINT_FILE.read_text(encoding="utf-8").strip())
+        if hinted_path.exists():
+            print(f"[OK] Reusing existing working llama-server at {hinted_path}")
+            return hinted_path
+
+    existing_binary = BIN_DIR / "llama-server"
+    if existing_binary.exists():
+        SERVER_HINT_FILE.write_text(str(existing_binary), encoding="utf-8")
+        print(f"[OK] Reusing existing working llama-server at {existing_binary}")
+        return existing_binary
+
+    cached_binary = find_cached_llama_server()
+    if cached_binary is None:
+        return None
+
+    restored_binary = link_or_copy(cached_binary, BIN_DIR / "llama-server")
+    if not restored_binary.is_symlink():
+        restored_binary.chmod(0o755)
+    SERVER_HINT_FILE.write_text(str(restored_binary), encoding="utf-8")
+    return restored_binary
+
+
+def build_standalone_llama_server() -> Path:
+    """Build the C++ llama-server binary with CUDA enabled."""
+    restored_binary = restore_cached_llama_server()
+    if restored_binary is not None:
+        return restored_binary
+
+    cmake_configure = [
+        "cmake",
+        "-S",
+        str(LLAMA_CPP_DIR),
+        "-B",
+        str(LLAMA_CPP_BUILD_DIR),
+        "-DGGML_CUDA=ON",
+        "-DLLAMA_BUILD_SERVER=ON",
+        "-DGGML_NATIVE=OFF",
+        "-DCMAKE_CUDA_ARCHITECTURES=75",
+        "-DCMAKE_BUILD_TYPE=Release",
+    ]
+    cmake_build = [
+        "cmake",
+        "--build",
+        str(LLAMA_CPP_BUILD_DIR),
+        "--config",
+        "Release",
+        "-j",
+    ]
+
+    run_command(cmake_configure)
+    run_command(cmake_build)
+
+    candidates = [
+        LLAMA_CPP_BUILD_DIR / "bin" / "llama-server",
+        LLAMA_CPP_BUILD_DIR / "bin" / "Release" / "llama-server",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            BIN_DIR.mkdir(parents=True, exist_ok=True)
+            target = BIN_DIR / "llama-server"
+            shutil.copy2(candidate, target)
+            target.chmod(0o755)
+            SERVER_HINT_FILE.write_text(str(target), encoding="utf-8")
+            print(f"[OK] Standalone llama-server available at {target}")
+            return target
+
+    raise FileNotFoundError(
+        "llama-server was not produced by the llama.cpp build. "
+        f"Checked: {', '.join(str(path) for path in candidates)}"
+    )
+
+
+def print_runtime_summary() -> None:
+    """Print the key runtime guardrails requested for Kaggle T4 inference."""
+    import torch
+    import transformers
+
+    print("\n[SUMMARY]")
+    print(f"torch version: {torch.__version__}")
+    print(f"transformers version: {transformers.__version__}")
+    print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"CUDA device count: {torch.cuda.device_count()}")
+        for index in range(torch.cuda.device_count()):
+            print(f"  GPU {index}: {torch.cuda.get_device_name(index)}")
+
+    print("Direct Transformers fallback on T4 must use:")
+    print("  torch_dtype=torch.float16")
+    print("  attn_implementation='sdpa'")
+    print("  AutoProcessor.from_pretrained(...)")
+    print("  max context 4096 for this Kaggle setup")
+
+
+def main() -> None:
+    """Install everything needed for the requested Kaggle workflow."""
+    try:
+        print("[INFO] Starting Kaggle setup install step...")
+        WORKDIR.mkdir(parents=True, exist_ok=True)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        PIP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        os.environ["PIP_CACHE_DIR"] = str(PIP_CACHE_DIR)
+
+        bootstrap_build_tools()
+        install_required_python_packages()
+        build_llama_cpp_python()
+        install_llama_cpp_server_dependencies()
+        print("[INFO] Skipping standalone llama.cpp server build on Kaggle.")
+        print("[INFO] Serving will use `python -m llama_cpp.server`, backed by the CUDA-built llama-cpp-python package.")
+        print_runtime_summary()
+        print("\n[SUCCESS] Installation and build steps completed.")
+    except Exception as exc:
+        print(f"\n[ERROR] 00_install.py failed: {exc}")
+        raise
+
+
+if __name__ == "__main__":
+    main()
