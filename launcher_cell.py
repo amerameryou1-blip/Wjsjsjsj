@@ -26,6 +26,11 @@ FILES = [
     "05_github_uploader.py",
 ]
 
+print("[INFO] Cache behavior:")
+print("[INFO] 1) Reuse current-session files already in /kaggle/working")
+print("[INFO] 2) Reuse any attached Kaggle input dataset that already contains the model/server")
+print("[INFO] 3) Only download/build missing pieces")
+
 headers = {}
 try:
     from kaggle_secrets import UserSecretsClient
@@ -59,10 +64,32 @@ for filename in FILES:
         destination.write_text(content, encoding="utf-8")
     print(f"[FETCH-DONE] Saved {filename} to {destination}")
 
+def print_log_tail(log_path: Path, max_lines: int = 120) -> None:
+    if not log_path.exists():
+        print(f"[WARN] Log file not found: {log_path}")
+        return
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    print(f"[LOG-TAIL] Showing last {min(len(lines), max_lines)} lines from {log_path}")
+    for line in lines[-max_lines:]:
+        print(line)
+
+
 for filename in FILES:
     script_path = WORKDIR / filename
+    log_path = WORKDIR / f"{filename}.log"
     print(f"[RUN-START] {filename}")
-    subprocess.run([sys.executable, str(script_path)], check=True)
+    with log_path.open("w", encoding="utf-8") as log_file:
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    if result.returncode != 0:
+        print(f"[ERROR] {filename} failed with exit code {result.returncode}")
+        print_log_tail(log_path)
+        raise RuntimeError(f"{filename} failed. Full log: {log_path}")
+    print_log_tail(log_path, max_lines=40)
     print(f"[RUN-DONE] {filename}")
 
 print("[SUCCESS] Kaggle Gemma 4 setup finished.")
